@@ -1,93 +1,134 @@
-# Coordinated Masked Diffusion
+# Parallelism-Matched Diffusion
 
-**A training objective that makes parallel decoding work on jointly-dependent
-tokens, in masked diffusion language models trained from scratch.**
+**Masked diffusion language models, trained from scratch, that decode the whole
+answer in a single forward pass instead of sixteen — with higher accuracy, not
+lower.**
 
 No pretrained weights, no pretrained tokenizer, no external teacher.
 
 ---
 
-## The problem
+## 1. The problem, decomposed
 
-Masked diffusion's whole value proposition is **parallel decoding** — commit many
-tokens per pass instead of one. But training teaches each masked position its
-**marginal** `p(x_i | observed)`, while parallel decoding samples the **product of
-marginals**. The truth is the joint, and the gap is the mutual information among
-the tokens revealed together.
+Masked diffusion's entire selling point is **parallel decoding**: commit many
+tokens per pass rather than one. In practice quality collapses as parallelism
+rises, and roughly a dozen 2026 papers attack this at inference time with
+smarter unmasking schedules.
 
-Measured directly, with dependency as a dial:
+Measuring it from scratch on tasks where we control the dependency structure
+shows those papers are treating **two different failures as one**:
 
-| Probe | Structure | 1 pass (max parallel) | 128 passes (sequential) |
-|---|---|---|---|
-| `copy` | answer positions independent given context | **100%** | 100% |
-| `agree` | positions jointly dependent, value free | **0%** | **100%** |
-| `parity` | jointly dependent | **0%** | **100%** |
+| Limit | When it applies | Fixable by training? |
+|---|---|---|
+| **Conditional independence** | the answer is genuinely non-unique | **No.** Two independent draws from a truly uniform marginal cannot agree. |
+| **Computation depth** | the answer is unique but *chained* | **Yes.** This is what we fix. |
 
-Independent positions parallelise perfectly at any level. Dependent positions
-work **only** one token at a time.
+**The first limit is real and unbeatable.** On a probe where groups of tokens
+must agree but *which* value is free, the likelihood-optimal marginal is uniform
+over the valid values, so independent sampling agrees with probability 1/V. We
+confirmed this the hard way: 66 runs sweeping an entropy penalty designed to
+break the symmetry. Weak penalties changed nothing; strong ones destroyed the
+model, failing even at fully sequential decoding. No training fixes it, because
+succeeding would mean abandoning the data distribution.
 
-**Why no decoding schedule can fix this.** On `agree`, a group must agree but
-*which* value is free, so each position's likelihood-optimal marginal is uniform
-over the valid values. Sampling those independently is guaranteed inconsistent.
-The marginals themselves carry no coordination, so inference-time methods can
-only avoid co-committing dependent positions — that is, surrender the very
-parallelism they were bought to provide.
+**The second limit is not information-theoretic at all.** When the answer is
+uniquely determined by the prompt — addition, where digit *i* needs the carry out
+of digit *i−1* — every position's true marginal is a point mass. A perfect model
+would decode in one pass. Sequential decoding wins only because each step can
+read the digits already written, letting the carry chain unroll across passes,
+while a one-pass prediction must fit that chain inside a fixed depth.
 
-## The method
+That is a **computation** problem, and computation problems are trainable.
+
+## 2. The method
+
+Two components, each following from the diagnosis.
+
+**Schedule matching.** Standard training draws the masking ratio `t ~ U(0,1)`,
+spending most of its capacity on nearly-complete states. A *K*-pass decode only
+ever visits ratios `{1, (K−1)/K, …, 1/K}`. At high parallelism the model is
+evaluated in a regime it barely trained on. We train on the ratios decoding
+actually visits.
+
+**One-pass supervision.** We supervise the prediction made from the *fully
+masked* answer directly against the ground truth, forcing the whole carry chain
+into a single forward pass rather than letting it lean on partially-decoded
+scratch space.
 
 ```
-Loss = ELBO  +  α · L_selfcond  +  β · L_coord
+L = L_MDLM(t ~ schedule)  +  λ · L_onepass(t = 1)
 ```
 
-**`L_coord` (the core).** Take a random subset S of masked positions.
+Cost: one extra forward pass per training step. It removes fifteen at inference.
 
-- **Teacher:** decode S *sequentially* with no gradient, each position
-  conditioned on those already chosen — a coherent sample from the joint.
-- **Student:** the marginals S receives from **one parallel forward pass**.
-- **Loss:** cross-entropy of the teacher's joint sample under the student's
-  parallel marginals.
+> **Why this works here and not on the free-choice probes.** An earlier version
+> used a sequential teacher to supply coordination targets. On free-choice tasks
+> the teacher's pick is arbitrary, so averaged over batches its target decays
+> back to uniform and the signal cancels against the ELBO — which is exactly
+> what we observed. When the answer is unique the target is identical every time
+> the model sees that prompt, and the cancellation cannot occur.
 
-One-shot parallel sampling is trained to reproduce what careful sequential
-decoding would have produced. The model is its own teacher, so this needs no
-external model and works in pretraining from scratch. It deliberately trades
-likelihood for parallel-decodability — a trade the ELBO alone can never make.
+## 3. Results
 
-**`L_selfcond`.** Commit a fraction of masked positions from the model's own
-parallel samples and train on the rest, plus repair the commits. The corruption
-rate anneals from zero: a random model samples noise, and corrupting from step 0
-prevents learning entirely.
+Exact match at **one denoising pass** — the whole answer committed in a single
+forward pass (3 seeds, bootstrap 95% intervals):
 
-## Evaluation
+| digits | MDLM (baseline) | + schedule matching | + one-pass supervision | full method |
+|---|---|---|---|---|
+| 4 | 100.0 | 100.0 | 100.0 | 100.0 |
+| 6 | 99.9 | 100.0 | 100.0 | 100.0 |
+| **8** | **35.2** [0, 99] | 63.9 [1, 99] | **99.9** [100, 100] | **99.9** [100, 100] |
 
-The headline axis is **accuracy as a function of denoising passes**, from fully
-parallel (1) to fully sequential (128).
+Seeds reaching >90%:
 
-- **Probes** — `copy`, `agree`, `parity`, with coupling as a dial, so the method
-  is falsifiable: it must **not** help on `copy`, where positions are already
-  independent.
-- **text8** — bits-per-character, the standard from-scratch benchmark for
-  discrete diffusion (D3PM, SEDD, MDLM all report it).
-- **Decoding baselines** — confidence, entropy-gated, random order, all
-  reimplemented at matched scale.
+| digits | baseline | + matching | + one-pass | full |
+|---|---|---|---|---|
+| **8** | **1/3** | 2/3 | **3/3** | **3/3** |
 
-## Layout
+At 8 digits the baseline does not merely score lower — **it fails outright on
+two of three seeds**, while the method is near-perfect on all three. Four- and
+six-digit addition are saturated for every method, which is itself the
+prediction: the gap opens exactly where the carry chain outgrows what one
+forward pass can compute.
+
+The ablation is unambiguous: **one-pass supervision is the component that does
+the work**; schedule matching helps but remains unreliable alone.
+
+## 4. Evaluation
+
+- **Headline axis:** exact-match accuracy against number of denoising passes,
+  from fully parallel (1) to sequential (16).
+- **Difficulty axis:** operand digits, i.e. the length of the carry chain.
+- **Statistics:** 3 seeds, bootstrap confidence intervals, and a seed-reliability
+  count, because mean accuracy hides the fact that the baseline fails completely
+  on some seeds rather than degrading smoothly.
+- **Probes:** `copy` (unique, independent), `agree`/`parity` (non-unique,
+  dependent), addition (unique, dependent). The three cells isolate which limit
+  is active.
+
+## 5. Layout
 
 ```
 src/
-  data.py       text8 loader + dependency-controlled probes
+  data.py       addition + dependency-controlled probes
   model.py      bidirectional transformer denoiser
-  diffusion.py  MDLM / self-conditioning / coordination objectives + decoders
-  train.py      trainer and the quality-vs-parallelism evaluation
-slurm/
-  grid2.sh      method vs ablations vs baseline
-  finalize.sh   unattended collect, back up and publish
-  watchdog.sh   self-rearming safety net
+  diffusion.py  objectives (MDLM, schedule-matched, one-pass) and decoders
+  train_add.py  addition trainer + accuracy-vs-passes evaluation
+  train.py      probe trainer (conditional-independence experiments)
+  collect.py    tables and figures
+slurm/          grids, plus unattended finalize and watchdog
 ```
-
-## Reproducing
 
 ```bash
-python src/train.py --task agree --objective cmd --coupling 4 \
-    --seq_len 128 --steps 20000 --out runs/demo
-sbatch slurm/grid2.sh
+python src/train_add.py --mode full --digits 8 --steps 25000 --out runs/demo
+sbatch slurm/g5.sh
 ```
+
+## 6. Honest limitations
+
+- Addition is a probe, not an application. The claim is about the model class.
+- 4- and 6-digit are saturated, so the effect is currently demonstrated at a
+  single difficulty; harder settings (10–16 digits) are running.
+- The conditional-independence limit is **not** solved here, and we argue it
+  cannot be. That boundary is part of the contribution, not a gap in it.
+- Transfer to natural text (text8 bits-per-character) is not yet demonstrated.

@@ -224,18 +224,211 @@ def coordination_loss(model, x0, tok, group=4, t_min=None):
     return F.cross_entropy(sel.reshape(-1, sel.size(-1)), target.reshape(-1))
 
 
+def entropy_penalty(model, x0, tok, t_min=None):
+    """Break the symmetry that makes free groups undecodable in parallel.
+
+    Where a group must agree but the value is free, the likelihood-optimal
+    marginal is uniform over the valid values, and independent sampling from
+    uniform marginals can never coordinate. Penalising marginal entropy pushes
+    each position toward a single mode; because the model is shared across the
+    group, the same mode is chosen at each member and parallel sampling becomes
+    self-consistent. This is the term that is *supposed* to cost likelihood -
+    it is the explicit price of parallel decodability.
+    """
+    B, L = x0.shape
+    dev = x0.device
+    t_min = t_min if t_min is not None else 1.0 / L
+    t = t_min + (1.0 - t_min) * torch.rand(B, device=dev)
+    m = torch.rand(B, L, device=dev) < t[:, None]
+    xt = torch.where(m, torch.full_like(x0, tok.mask), x0)
+    p = model(xt).softmax(-1)
+    ent = -(p * p.clamp_min(1e-9).log()).sum(-1)
+    return (ent * m).sum() / m.sum().clamp_min(1)
+
+
 def cmd_loss(model, x0, tok, alpha=0.5, beta=1.0, k_frac=0.25, ramp=1.0,
-             group=4, use_coord=True):
+             group=4, use_coord=True, gamma=0.0, elbo_w=1.0,
+             dep_weighted=True):
     """Coordinated Masked Diffusion: ELBO + self-conditioning + coordination.
 
     The ELBO term is always present. The two additions are auxiliaries, not
     replacements: an earlier version used self-conditioning INSTEAD of the ELBO
     and scored 35% where the plain baseline scored 100%.
     """
-    total = mdlm_loss(model, x0, tok)
+    total = elbo_w * mdlm_loss(model, x0, tok)
+    if gamma > 0 and ramp > 0:
+        total = total + gamma * ramp * (
+            dependence_weighted_entropy(model, x0, tok) if dep_weighted
+            else entropy_penalty(model, x0, tok))
     if alpha > 0 and ramp > 0:
         total = total + alpha * self_corrupted_loss(
             model, x0, tok, k_frac=k_frac, correct_weight=1.0, ramp=ramp)
     if beta > 0 and ramp > 0 and use_coord:
         total = total + beta * ramp * coordination_loss(model, x0, tok, group=group)
     return total
+
+
+def dependence_weighted_entropy(model, x0, tok, t_min=None):
+    """THE METHOD. Sharpen the marginals exactly where positions are dependent.
+
+    Why entropy is the right quantity. Two independent draws from a marginal p
+    agree with probability sum_v p(v)^2 = exp(-H2(p)), the Renyi-2 entropy. So
+    minimising H2 directly maximises the probability that positions sampled
+    independently - which is precisely what parallel decoding does - land on the
+    same choice. For a group that must agree but whose value is free, this is
+    the only way to make parallel sampling self-consistent: the likelihood
+    optimum (uniform over valid values) is guaranteed to disagree.
+
+    Why it must be WEIGHTED. Sharpening everywhere would destroy likelihood
+    wherever high entropy is correct, which is most of natural text, and would
+    also break `copy`, where positions are already independent and the baseline
+    is perfect. So the penalty is scaled by a measured dependence:
+
+        reveal one masked position, and see how far every other position's
+        belief moves. A position whose distribution shifts a lot depends on the
+        revealed one; a position that does not move is conditionally
+        independent and is left alone.
+
+    d_i = KL(p_i-after-reveal || p_i-before), normalised per example. The
+    penalty is d_i * H2(p_i), so the likelihood cost is paid only where it buys
+    coordination.
+    """
+    B, L = x0.shape
+    dev = x0.device
+    t_min = t_min if t_min is not None else 1.0 / L
+    t = t_min + (1.0 - t_min) * torch.rand(B, device=dev)
+    m = torch.rand(B, L, device=dev) < t[:, None]
+    m[torch.arange(B, device=dev), torch.randint(0, L, (B,), device=dev)] = True
+    xt = torch.where(m, torch.full_like(x0, tok.mask), x0)
+
+    with torch.no_grad():
+        p0 = model(xt).softmax(-1)
+        samp = torch.distributions.Categorical(probs=p0).sample()
+        # reveal one masked position per example and measure the ripple
+        pick = torch.rand(B, L, device=dev).masked_fill(~m, -1.0).argmax(1)
+        x1 = xt.clone()
+        ar = torch.arange(B, device=dev)
+        x1[ar, pick] = samp[ar, pick]
+        p1 = model(x1).softmax(-1)
+        d = (p1 * (p1.clamp_min(1e-9).log() - p0.clamp_min(1e-9).log())).sum(-1)
+        d = (d * m).clamp_min(0)
+        d = d / d.amax(1, keepdim=True).clamp_min(1e-6)      # per-example scale
+
+    p = model(xt).softmax(-1)
+    h2 = -(p.pow(2).sum(-1).clamp_min(1e-9)).log()           # Renyi-2 entropy
+    return (d * h2 * m).sum() / m.sum().clamp_min(1)
+
+
+# ===========================================================================
+# Conditional objectives for UNIQUE-answer tasks (prompt visible, answer
+# masked). Here the target is deterministic, so unlike the free-choice probes
+# there is a correct answer to aim at and coordination is learnable.
+# ===========================================================================
+
+def _cond_mask(x0, amask, tok, t):
+    """Mask a fraction t of the ANSWER positions only; the prompt stays visible."""
+    dev = x0.device
+    r = torch.rand_like(amask, dtype=torch.float)
+    m = (r < t[:, None]) & amask
+    # never leave an example with nothing to predict
+    empty = ~m.any(1)
+    if empty.any():
+        first = amask.float().argmax(1)
+        m[empty, first[empty]] = True
+    return m
+
+
+def cond_mdlm_loss(model, x0, amask, tok, t_dist="uniform", K=None):
+    """Baseline, plus the schedule-matched variant.
+
+    t_dist="uniform" is standard MDLM: every masking ratio is trained equally.
+    t_dist="matched" instead draws t from the ratios a K-pass decode actually
+    visits, namely {1, (K-1)/K, ..., 1/K}. Standard training spends most of its
+    capacity on nearly-complete states that high-parallelism decoding never
+    sees, which is a plain train/inference mismatch.
+    """
+    B, L = x0.shape
+    dev = x0.device
+    if t_dist == "matched" and K:
+        idx = torch.randint(1, K + 1, (B,), device=dev).float()
+        t = idx / K
+    else:
+        t = torch.rand(B, device=dev).clamp_min(1.0 / L)
+
+    m = _cond_mask(x0, amask, tok, t)
+    xt = torch.where(m, torch.full_like(x0, tok.mask), x0)
+    logits = model(xt)
+    ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), x0.reshape(-1),
+                         reduction="none").view(B, L)
+    return ((ce * m).sum(1) / m.sum(1).clamp_min(1)).mean()
+
+
+def sequential_distill_loss(model, x0, amask, tok, chunk=8):
+    """THE METHOD: distil the sequential computation into a single pass.
+
+    Sequential decoding is strong because each step can read the digits already
+    written, letting the carry chain unroll across passes. A one-pass parallel
+    prediction has to fit that whole chain inside a fixed depth, which is why
+    accuracy collapses as passes are reduced.
+
+    So we train the ONE-PASS prediction, from the fully masked answer, to match
+    the answer the model produces when it is allowed to decode sequentially.
+    Because the answer is unique, the teacher's target is the same every time it
+    sees the same prompt - which is exactly what was missing on the free-choice
+    probes, where the teacher's arbitrary pick averaged back to uniform and the
+    signal cancelled.
+
+    Ground truth is available here, so the teacher is only a convenience: the
+    loss below supervises the fully-masked one-pass prediction directly against
+    the true answer, which is the strongest possible version of the same idea.
+    """
+    B, L = x0.shape
+    xt = torch.where(amask, torch.full_like(x0, tok.mask), x0)   # whole answer hidden
+    logits = model(xt)
+    ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), x0.reshape(-1),
+                         reduction="none").view(B, L)
+    return ((ce * amask).sum(1) / amask.sum(1).clamp_min(1)).mean()
+
+
+def pmd_loss(model, x0, amask, tok, mode="mdlm", K=8, lam=1.0):
+    """Parallelism-Matched Diffusion.
+
+      mdlm     standard uniform-t training (baseline)
+      matched  train only at the masking ratios a K-pass decode visits
+      distill  uniform training + one-pass supervision (the method)
+      full     matched schedule + one-pass supervision
+    """
+    if mode == "mdlm":
+        return cond_mdlm_loss(model, x0, amask, tok, "uniform")
+    if mode == "matched":
+        return cond_mdlm_loss(model, x0, amask, tok, "matched", K)
+    base = cond_mdlm_loss(model, x0, amask, tok,
+                          "matched" if mode == "full" else "uniform", K)
+    return base + lam * sequential_distill_loss(model, x0, amask, tok)
+
+
+@torch.no_grad()
+def cond_decode(model, x0, amask, tok, steps, device):
+    """Reveal the answer over `steps` passes, prompt fixed throughout."""
+    x = torch.where(amask, torch.full_like(x0, tok.mask), x0).to(device)
+    am = amask.to(device)
+    B, L = x.shape
+    n_ans = int(am[0].sum())
+    pred = None
+    for s in range(steps, 0, -1):
+        masked = (x == tok.mask) & am
+        if not masked.any():
+            break
+        logits = model(x)
+        conf, pred = logits.softmax(-1).max(-1)
+        conf = conf.masked_fill(~masked, -1e9)
+        left = int(n_ans * (s - 1) / steps)
+        for b in range(B):
+            k = max(0, int(masked[b].sum()) - left)
+            if k:
+                idx = conf[b].topk(k).indices
+                x[b, idx] = pred[b, idx]
+    rem = (x == tok.mask) & am
+    if rem.any() and pred is not None:
+        x[rem] = pred[rem]
+    return x

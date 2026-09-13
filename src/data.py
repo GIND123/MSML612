@@ -130,3 +130,60 @@ def build_probe(n, seq_len, coupling, seed=0, task="copy"):
         else:
             raise ValueError(task)
     return X, tok
+
+
+# ---------------------------------------------------------------------------
+# Addition: the canonical UNIQUE-answer task with chained inter-token
+# dependence. Given the operands the answer is fully determined, so every
+# position's true marginal is a point mass and parallel decoding faces no
+# information-theoretic barrier - unlike `agree`/`parity`, where the value is
+# genuinely free and the bound is unbeatable. What remains is a computation
+# problem: digit i needs the carry out of digit i-1, and sequential decoding
+# amortises that chain across passes while parallel decoding must fit it inside
+# one fixed-depth forward pass.
+# ---------------------------------------------------------------------------
+
+DIGITS10 = "0123456789"
+
+
+class AddTokenizer:
+    def __init__(self):
+        self.itos = ["[MASK]", "[PAD]", "+", "="] + list(DIGITS10)
+        self.stoi = {c: i for i, c in enumerate(self.itos)}
+        self.mask = self.stoi["[MASK]"]
+        self.pad = self.stoi["[PAD]"]
+
+    def __len__(self):
+        return len(self.itos)
+
+
+def build_addition(n, digits, seq_len, seed=0, exact=False):
+    """Returns (X, answer_mask, tok).
+
+    Layout: operand a, '+', operand b, '=', then the answer written
+    units-first. `answer_mask` marks the positions the model must produce; the
+    prompt is always visible, so the task is conditional and the answer unique.
+    """
+    tok = AddTokenizer()
+    rng = np.random.default_rng(seed)
+    X = np.full((n, seq_len), tok.pad, dtype=np.int64)
+    A = np.zeros((n, seq_len), dtype=bool)
+
+    for i in range(n):
+        d = digits if exact else int(rng.integers(1, digits + 1))
+
+        def draw(nd):
+            ds = rng.integers(0, 10, size=nd)
+            if nd > 1 and ds[0] == 0:
+                ds[0] = rng.integers(1, 10)
+            return "".join(str(int(v)) for v in ds)
+
+        pa, pb = draw(d), draw(d)
+        s = str(int(pa) + int(pb))[::-1]          # units first
+        seq = list(pa) + ["+"] + list(pb) + ["="] + list(s)
+        if len(seq) > seq_len:
+            raise ValueError(f"seq_len {seq_len} too small for {d} digits")
+        ids = [tok.stoi[c] for c in seq]
+        X[i, : len(ids)] = ids
+        A[i, len(pa) + len(pb) + 2: len(ids)] = True   # answer positions only
+    return X, A, tok

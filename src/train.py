@@ -22,6 +22,14 @@ def get_args():
                         "coord=+coordination; cmd=full method (all three)")
     p.add_argument("--alpha", type=float, default=0.5, help="self-conditioning weight")
     p.add_argument("--beta", type=float, default=1.0, help="coordination weight")
+    p.add_argument("--gamma", type=float, default=0.0,
+                   help="marginal-entropy penalty: the explicit price paid in "
+                        "likelihood to buy parallel decodability")
+    p.add_argument("--dep_weighted", type=int, default=1,
+                   help="1 = sharpen only where positions are measurably dependent; "
+                        "0 = sharpen everywhere (ablation)")
+    p.add_argument("--elbo_w", type=float, default=1.0,
+                   help="down-weight the ELBO so coordination is not cancelled by it")
     p.add_argument("--group", type=int, default=4)
     p.add_argument("--coord_every", type=int, default=4,
                    help="apply the coordination term every N steps; the teacher\n                         costs `group` sequential passes, so this amortises it")
@@ -157,10 +165,14 @@ def main():
             uc = (step % a.coord_every == 0)
             if a.objective == "cmd":
                 loss = dfn.cmd_loss(model, x0, tok, a.alpha, a.beta, a.k_frac,
-                                    ramp, a.group, use_coord=uc)
+                                    ramp, a.group, use_coord=uc,
+                                    gamma=a.gamma, elbo_w=a.elbo_w,
+                                    dep_weighted=bool(a.dep_weighted))
             elif a.objective == "coord":
                 loss = dfn.cmd_loss(model, x0, tok, 0.0, a.beta, a.k_frac,
-                                    ramp, a.group, use_coord=uc)
+                                    ramp, a.group, use_coord=uc,
+                                    gamma=a.gamma, elbo_w=a.elbo_w,
+                                    dep_weighted=bool(a.dep_weighted))
             elif a.objective == "selfcorrupt":
                 loss = dfn.cmd_loss(model, x0, tok, a.alpha, 0.0, a.k_frac, ramp)
             else:
