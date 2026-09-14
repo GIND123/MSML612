@@ -85,8 +85,44 @@ def run(model, steps, strategy, tau=None):
         rem = (x == tok.mask) & ab
         if rem.any() and pred is not None:
             x[rem] = pred[rem]
-        accs.append(exact_match(x.cpu(), xb.cpu(), ab.cpu(), tok))
-    return float(np.mean(accs))
+        accs.extend(per_example(x.cpu(), xb.cpu(), ab.cpu()))
+    return np.array(accs, dtype=float)
+
+
+def per_example(pred, gold, amask):
+    """Correct/incorrect per evaluation item, not a batch mean.
+
+    A paired test needs to know which items each system got right, on the SAME
+    items. Batch means throw that away.
+    """
+    out = []
+    for p, g, a in zip(pred.tolist(), gold.tolist(), amask.tolist()):
+        pa = [p[i] for i in range(len(a)) if a[i]]
+        ga = [g[i] for i in range(len(a)) if a[i]]
+        out.append(float(pa == ga))
+    return out
+
+
+def paired_test(ours, theirs, n_perm=20000, seed=0):
+    """Paired permutation test on the same evaluation items.
+
+    The two systems are scored on identical inputs, so the items are paired and
+    a paired test is the right one: under the null that the systems are
+    interchangeable, the sign of each item's difference is exchangeable.
+    Reports the observed difference, a bootstrap 95% interval on it, and the
+    two-sided p-value.
+    """
+    d = ours - theirs
+    obs = float(d.mean())
+    rng = np.random.default_rng(seed)
+    flips = rng.choice([-1.0, 1.0], size=(n_perm, len(d)))
+    null = (flips * d).mean(axis=1)
+    p = float((np.abs(null) >= abs(obs) - 1e-12).mean())
+    idx = rng.integers(0, len(d), size=(10000, len(d)))
+    bs = d[idx].mean(axis=1)
+    return {"diff": obs, "ci95": [float(np.percentile(bs, 2.5)),
+                                  float(np.percentile(bs, 97.5))],
+            "p_value": p, "n": int(len(d))}
 
 
 base_dirs = sorted(glob.glob(f"{a.runs}/g11-d{a.digits}-mdlm-s*"))
@@ -99,6 +135,7 @@ results = {"digits": a.digits, "inference_time_on_baseline": {}, "ours": {}}
 print(f"\n=== {a.digits}-digit addition: can any inference-time method rescue "
       f"the baseline? ===")
 print(f"{'strategy':<22}{'1 pass':>9}{'2':>8}{'4':>8}{'8':>8}{'16':>8}")
+ITEMS = {}
 for strat, tau in [("confidence", None), ("entropy", None), ("entropy-gated", 0.5),
                    ("margin", None), ("random", None)]:
     row = []
@@ -111,15 +148,30 @@ for strat, tau in [("confidence", None), ("entropy", None), ("entropy-gated", 0.
     results["inference_time_on_baseline"][strat] = row
     print(f"{strat:<22}" + "".join(f"{v*100:8.1f}" for v in row))
 
-row = []
+row, ours_items = [], []
 for steps in (1, 2, 4, 8, 16):
-    vals = []
-    for d in ours_dirs:
-        m, _ = load(d)
-        vals.append(run(m, steps, "confidence"))
-    row.append(float(np.mean(vals)))
+    vals = [run(load(d)[0], steps, "confidence") for d in ours_dirs]
+    per = np.mean(np.stack(vals), axis=0)
+    row.append(float(per.mean())); ours_items.append(per)
 results["ours"]["confidence"] = row
 print(f"{'OURS (training-time)':<22}" + "".join(f"{v*100:8.1f}" for v in row))
+
+print(f"\n=== is the difference significant? (paired permutation test) ===")
+print("Our method at ONE pass against each inference-time strategy at its BEST")
+print("budget, scored on identical evaluation items.\n")
+print(f"{'vs strategy':<22}{'their best':>12}{'ours @1':>10}{'diff':>9}"
+      f"{'95% CI':>18}{'p':>10}")
+results["significance"] = {}
+for strat, rows in ITEMS.items():
+    best_i = int(np.argmax([r.mean() for r in rows]))
+    st = paired_test(ours_items[0], rows[best_i])
+    results["significance"][strat] = dict(st, their_best_budget=[1, 2, 4, 8, 16][best_i])
+    print(f"{strat:<22}{rows[best_i].mean()*100:11.1f}%{ours_items[0].mean()*100:9.1f}%"
+          f"{st['diff']*100:+8.1f}"
+          f"   [{st['ci95'][0]*100:+.1f},{st['ci95'][1]*100:+.1f}]"
+          f"{st['p_value']:10.2g}")
+print(f"\n(n = {len(ours_items[0])} paired evaluation items; "
+      f"p is two-sided, 20000 permutations)")
 
 best_inf = max(v[0] for v in results["inference_time_on_baseline"].values())
 best_inf_any = max(max(v) for v in results["inference_time_on_baseline"].values())
