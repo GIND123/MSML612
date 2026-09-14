@@ -74,42 +74,44 @@ loss = CE( model(x_t, budget=K), x₀ )
 It costs **one embedding lookup and no extra forward pass**, so it is cheaper
 than the fixed-`K` method it replaces.
 
-### It is a trade, not a free win — and on addition the trade is catastrophic
+### It does not work
 
-Measured on 20-digit addition, against the fixed-`K` (`K = 1`) method:
+Sampling the budget during training was my proposed fix for fixed-`K`'s
+commitment to one budget. Measured, it fails.
+
+**20-digit addition**, against fixed-`K` (`K = 1`):
 
 | training | 1 pass | 2 | 4 | 8 | 16 | 21 (sequential) |
 |---|---|---|---|---|---|---|
 | MDLM baseline | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | – |
 | **fixed-K (K=1)** | **99.9** | 99.3 | 95.6 | 87.5 | 85.8 | – |
-| any-budget, no conditioning | 0.4 | 0.5 | 0.5 | 0.6 | 0.5 | 0.5 |
-| **any-budget** | **0.0** | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| any-budget | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 
-Any-budget does not flatten the crossover here; it **destroys the capability**,
-scoring zero at every budget including a fully sequential decode — it never
-learned the task at all. Conditioning is even slightly *worse* than not
-conditioning, so the embedding does not pay for itself on this task.
+It does not flatten the crossover; it destroys the capability, scoring zero at
+every budget including a fully sequential decode. The mechanism is arithmetic: a
+one-pass decode starts at `t = 1`, and the training mass landing there is
+`1.000` for fixed-`K` against `(1/9) Σ_K 1/K = 0.222` for uniform any-budget — a
+**4.5× dilution** of the only signal that matters, on a task sitting exactly at
+the learnability edge.
 
-The mechanism is arithmetic, and measured rather than inferred. A one-pass decode
-begins at `t = 1`, and the share of training landing there is
+**Graphs**, mean over four families and two seeds, any-budget minus baseline:
 
-```
-fixed-K (K=1):   P(t = 1) = 1.000
-any-budget:      P(t = 1) = (1/9) Σ_K 1/K = 0.222
-```
+| K = 1 | K = 2 | K = 4 | K = 8 | K = 15 |
+|---|---|---|---|---|
+| +0.3 | −2.7 | −2.9 | **−4.2** | **−31.7** |
 
-a **4.5× dilution** of the only signal that matters here. 20-digit addition sits
-exactly at the learnability edge — uniform-`t` training supplies almost no mass
-at `t = 1` and scores 0%, `t = 1` alone scores 99.9% — so cutting that signal
-4.5× drops it back below threshold.
+Worse at every budget above one, and catastrophically worse at high budgets
+(tree −81.6, 2-regular −43.7). Spreading training across nine budgets leaves
+each one undertrained relative to a specialist, and the conditioning embedding
+does not recover the difference — an unconditioned control sampling the same
+budgets does no better.
 
-**The budget distribution is therefore a hyperparameter that must match
-deployment, not a universal default.** Where only one budget is ever used, match
-it; spreading is pure loss. Where many are used — the graph families in §3b,
-where any-budget sits at the ceiling at one pass *and* leads by 9.7 points at
-K = 8 — spreading is what buys the frontier. Reweighting `K` recovers the
-`t = 1` share (`1/K` weighting gives 0.667, steeper gives 0.858), which is what
-the principle prescribes once the deployment budget is known.
+**The negative result is the finding.** "One model for every decoding budget" is
+not free, and at this scale it does not pay for itself at any budget. What
+survives is the narrower claim the addition results already supported: *train
+the schedule you intend to decode at.* Matching a single known budget works
+extremely well (99.9% against a baseline's 0.0%); trying to serve all of them at
+once works worse than either.
 
 **Fix (ii) — entropy-budgeted commitment.** At each pass, rank still-masked
 positions by conditional entropy and commit the longest low-entropy prefix whose
@@ -322,20 +324,39 @@ as the Jensen step requires.
 This is what no earlier task could do. Perfect matchings on 6 nodes,
 `TC = 6.92 bits`, `V* = 0.825%`:
 
-| family | TC | V* | mode | one pass (95% CI) | contains V*? | K = 8 |
-|---|---|---|---|---|---|---|
-| matching | 6.92 | 0.825% | MDLM | 0.769% [0.602, 0.983] | **yes** | 76.7% |
-| matching | 6.92 | 0.825% | any-budget | 0.854% [0.677, 1.078] | **yes** | **86.4%** |
-| 2-regular | 8.43 | 0.289% | MDLM | 0.317% [0.217, 0.465] | **yes** | 94.4% |
+Four families, two seeds each, one-pass validity against the exact ceiling:
 
-**At one pass every model sits at the information-theoretic limit**, so the
-residual failure is provably mode (ii) and no training objective can recover it —
-and this holds across families whose ceilings differ by 2.9×, which is the
-proposition doing work rather than one lucky point.
+| family | TC (bits) | V* | achieved @1 pass (95% CI) | reading |
+|---|---|---|---|---|
+| 2-regular | 8.43 | 0.289% | 0.317% [0.217, 0.465] | **at the ceiling** |
+| matching | 6.92 | 0.825% | 0.769% [0.602, 0.983] | **at the ceiling** |
+| tree | 3.43 | 9.249% | 9.204% [8.597, 9.849] | **at the ceiling** |
+| **bipartite** | **0.11** | **93.632%** | **5.884% [5.395, 6.414]** | **16× below** |
 
-**At K = 8 budget conditioning is worth 9.7 points** on the matching family, so
-mode (i) is real at intermediate budgets and conditioning is what addresses it.
-Same task, same models, both modes quantified separately.
+This is the decomposition working as a measurement instrument, and it is sharper
+than predicted.
+
+**Where dependence is high, models land exactly on the information-theoretic
+ceiling.** Three families, ceilings spanning 32× (0.289% to 9.249%), and in every
+case the interval contains `V*`. The residual failure there is provably mode (ii)
+and no training objective can recover it.
+
+**Where dependence is nearly absent, the failure is entirely trainable — and
+nothing we tried trains it.** Bipartite has `TC = 0.11` bits, so one-pass
+decoding should be almost free at 93.6%, yet both the baseline and the
+budget-conditioned model reach only 5.9%. That is **87.7 points of purely mode-(i)
+headroom left on the table**, and it is the clearest open problem this framework
+produces: an exactly quantified gap that is known to be trainable and that no
+method here closes.
+
+Coverage confirms none of this is degeneracy — 100% of the matching and
+2-regular families are recovered at K = 8.
+
+One caution the exactness makes visible: `tree`/any-budget scores 10.06%
+[9.43, 10.73], statistically **above** `V* = 9.25%`. `V*` bounds models whose
+marginals match the data's, not all models — exceeding it means the marginals
+have drifted, trading distributional fidelity for validity. See
+[`THEORY.md`](THEORY.md) §5.1.
 
 Coverage confirms this is not degeneracy: 100% of the 15-member family is
 recovered at K = 8 and under the entropy budget. (Reporting "uniqueness" as

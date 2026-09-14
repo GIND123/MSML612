@@ -167,8 +167,17 @@ V*  =  Q(valid)  =  Σ_{g valid}  ∏ᵢ pᵢ(gᵢ),
 ```
 
 the probability that independent draws from the *true* marginals land on a valid
-object. No model can exceed `V*` at one pass, since `V*` already assumes perfect
-marginals.
+object.
+
+`V*` is the one-pass ceiling **for a model whose marginals match the data's** —
+which is what a correctly trained masked diffusion model converges to. It is
+*not* a bound over all models: a model with deviating marginals can trade
+distributional fidelity for validity and score above `V*`, and one of ours does
+(tree family, 10.06% [9.43, 10.73] against `V* = 9.25%`). Exceeding `V*` is
+therefore evidence that a model is **not** reproducing the data distribution,
+not evidence of beating an information-theoretic bound. Read together with a
+coverage or likelihood metric, it is a useful diagnostic rather than an
+anomaly.
 
 **Proposition.** If `P` is uniform over a family `F` of size `M`, then
 
