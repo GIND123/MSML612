@@ -20,7 +20,7 @@ Those methods treat one symptom as one disease. There are two:
 
 | | failure mode | why it happens | fixable by |
 |---|---|---|---|
-| **(i)** | marginals are untrained at high mask ratio | a *K*-pass decode only ever evaluates the model at ratios `{1, (K−1)/K, …, 1/K}`, but uniform-`t` training spends most of its capacity on nearly-complete states that high-parallelism decoding never visits | **training only** |
+| **(i)** | the fully-masked state is never trained | a *K*-pass decode evaluates the model at ratios `{1, (K−1)/K, …, 1/K}` and **starts from t = 1**. Continuous `t ~ U(0,1)` assigns that state probability **zero** | **training only** |
 | **(ii)** | committed positions carry real mutual information | parallel decoding samples the **product** of marginals; the truth is the **joint** | **inference only** |
 
 For (ii) the discarded dependence is the total correlation of the committed set
@@ -46,9 +46,26 @@ inference — and the two are measured separately.
 
 **Fix (i) — schedule matching.** Draw the masking ratio from the ratios the
 intended decoding budget actually visits, `t ~ {1, (K−1)/K, …, 1/K}`, instead of
-`t ~ U(0,1)`. At `K = 1` this degenerates to `t = 1`: supervise the prediction
+`t ~ U(0,1)`.
+
+The precise mechanism matters and is easy to state wrongly. That discrete draw is
+*uniform over the same range*, so it does not broadly shift mass toward heavy
+masking. What it does is place an **atom of probability 1/K exactly at t = 1** —
+the fully-masked state, which is where every decode begins and which continuous
+`U(0,1)` hits with probability **zero**. Standard MDLM trains the state one-pass
+decoding starts from a measure-zero fraction of the time.
+
+At `K = 1` the schedule degenerates to `t = 1` always: supervise the prediction
 made from the *fully masked* answer directly against ground truth. The addition
 experiments are that `K = 1` special case. One principle, task-appropriate `K`.
+
+This yields a second, sharper prediction: **the training `K` should match the
+decoding budget you intend to use.** Addition is decoded in one pass, so `K = 1`
+is right and heavier emphasis at `t = 1` is pure gain. Text at a moderate budget
+is not, and over-concentrating at `t = 1` — where an unconditional model can only
+learn character frequencies — should actively *hurt*. §3 runs `mdlm`, `matched`
+and a `t = 1`-heavy variant precisely to test that, and a result where the
+`t = 1`-heavy variant loses on text is a confirmation, not a failure.
 
 **Fix (ii) — entropy-budgeted commitment.** At each pass, rank still-masked
 positions by conditional entropy and commit the longest low-entropy prefix whose
