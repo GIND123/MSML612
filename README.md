@@ -293,16 +293,20 @@ as the Jensen step requires.
 This is what no earlier task could do. Perfect matchings on 6 nodes,
 `TC = 6.92 bits`, `V* = 0.825%`:
 
-| | one pass (95% CI) | contains V*? | K = 8 |
-|---|---|---|---|
-| MDLM baseline | 0.769% [0.602, 0.983] | **yes** | 76.7% |
-| any-budget | 0.928% [0.677, 1.271] | **yes** | **94.7%** |
+| family | TC | V* | mode | one pass (95% CI) | contains V*? | K = 8 |
+|---|---|---|---|---|---|---|
+| matching | 6.92 | 0.825% | MDLM | 0.769% [0.602, 0.983] | **yes** | 76.7% |
+| matching | 6.92 | 0.825% | any-budget | 0.854% [0.677, 1.078] | **yes** | **86.4%** |
+| 2-regular | 8.43 | 0.289% | MDLM | 0.317% [0.217, 0.465] | **yes** | 94.4% |
 
-**At one pass both sit at the information-theoretic limit**, so the residual
-99.2% failure is provably mode (ii) and no training objective can recover it.
-**At K = 8 the gap is 18 points**, so mode (i) is real at intermediate budgets
-and budget conditioning is what addresses it. Same task, same models, both modes
-quantified separately.
+**At one pass every model sits at the information-theoretic limit**, so the
+residual failure is provably mode (ii) and no training objective can recover it —
+and this holds across families whose ceilings differ by 2.9×, which is the
+proposition doing work rather than one lucky point.
+
+**At K = 8 budget conditioning is worth 9.7 points** on the matching family, so
+mode (i) is real at intermediate budgets and conditioning is what addresses it.
+Same task, same models, both modes quantified separately.
 
 Coverage confirms this is not degeneracy: 100% of the 15-member family is
 recovered at K = 8 and under the entropy budget. (Reporting "uniqueness" as
