@@ -155,6 +155,69 @@ This bound is what makes the entropy budget principled rather than heuristic.
 Committing while Σᵢ H(xᵢ | c) ≤ B caps the discarded dependence at B nats per
 pass, so B is a dial on a quantity with units, not a tuned threshold.
 
+### 5.1 The dependence sets an exact ceiling on one-pass decoding
+
+The bound above says *how much* is discarded. A sharper statement says what it
+costs. Let `P` be the data distribution on a set of structured objects and
+`Q = ∏ᵢ pᵢ` the product of its own marginals — which is exactly what a one-pass
+parallel decode samples from. Define the **one-pass ceiling**
+
+```
+V*  =  Q(valid)  =  Σ_{g valid}  ∏ᵢ pᵢ(gᵢ),
+```
+
+the probability that independent draws from the *true* marginals land on a valid
+object. No model can exceed `V*` at one pass, since `V*` already assumes perfect
+marginals.
+
+**Proposition.** If `P` is uniform over a family `F` of size `M`, then
+
+```
+V*  ≥  2^(−TC),        TC = D_KL(P ‖ Q),
+```
+
+with equality iff `Q` is constant on `F`.
+
+*Proof.* `TC = −log₂M − (1/M) Σ_{g∈F} log₂Q(g)`. By Jensen,
+`(1/M) Σ log₂Q(g) ≤ log₂((1/M) Σ Q(g)) = log₂(V*/M)`. Substituting gives
+`−TC ≤ log₂V*`. Equality in Jensen holds iff `Q(g)` is constant on `F`. ∎
+
+**Every bit of total correlation among jointly committed variables at most
+halves the one-pass success probability.**
+
+This is verified exactly rather than estimated. Enumerating graph families on
+6 and 7 nodes gives closed-form `pᵢ`, `H(S) = log₂M`, `TC`, and `V*`:
+
+| family | n | \|F\| | TC (bits) | V* | 2^(−TC) | ratio |
+|---|---|---|---|---|---|---|
+| bipartite | 7 | 4017 | 0.026 | 98.2816% | 98.1817% | 1.001 |
+| bipartite | 6 | 466 | 0.112 | 93.6324% | 92.5073% | 1.012 |
+| tree | 6 | 1296 | 3.435 | **9.2488%** | **9.2488%** | **1.00000** |
+| trianglefree | 6 | 2335 | 3.571 | 8.5380% | 8.4147% | 1.015 |
+| tree | 7 | 16807 | 4.089 | **5.8771%** | **5.8771%** | **1.00000** |
+| matching | 6 | 15 | 6.922 | **0.8246%** | **0.8246%** | **1.00000** |
+| 2regular | 6 | 70 | 8.435 | **0.2889%** | **0.2889%** | **1.00000** |
+| 2regular | 7 | 465 | 10.423 | **0.0728%** | **0.0728%** | **1.00000** |
+
+The inequality holds in every row. Equality holds to five decimal places on
+exactly the families with a **fixed edge count** — matching, 2-regular, tree —
+where symmetry makes `Q` constant on `F`, and fails precisely where edge counts
+vary (bipartite, triangle-free), which is what the Jensen step predicts. The
+proposition is therefore confirmed in both its equality and its strict-inequality
+cases.
+
+### 5.2 Why this makes the two modes separable by measurement
+
+On addition `TC = 0`, so no gap can be attributed to mode (ii). On text `H(S|c)`
+is not computable, so neither mode can be isolated numerically. On these graph
+families both are exact at once, which turns the decomposition into an
+experiment rather than an argument:
+
+* a model that **reaches `V*`** at one pass has perfect marginals, so its
+  residual failure is entirely mode (ii) and **provably not trainable**;
+* a model that **falls short of `V*`** is short by exactly mode (i), the
+  trainable part, and budget conditioning should recover it.
+
 ## 6. How the two modes are told apart
 
 They make opposite predictions, which is what lets the experiments separate them:
