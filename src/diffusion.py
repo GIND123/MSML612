@@ -514,25 +514,33 @@ def _commit(x, take, samp):
     return torch.where(take, samp, x)
 
 
-def real_probs(logits, tok):
-    """Distribution over REAL tokens only.
+def real_probs(logits, tok, allowed=None):
+    """Distribution over REAL tokens only, optionally position-typed.
 
     The absorbing state is an input symbol, never an output: in the SUBS
     parameterisation the denoiser places zero probability on [MASK]. Sampling
     from the raw softmax instead lets a position be "committed" as [MASK], so it
     stays masked, decoding silently stalls, and the adaptive rules stop being
     monotone in their budget. The audit caught exactly this.
+
+    `allowed` is an optional (L, V) boolean mask of which symbols each position
+    may take. Graph data needs it: a node slot must take an atom type and an
+    edge slot a bond type, and that is a property of the representation rather
+    than something the model should have to spend capacity rediscovering.
     """
     logits = logits.clone()
     logits[..., tok.mask] = -float("inf")
     if getattr(tok, "pad", tok.mask) != tok.mask:
         logits[..., tok.pad] = -float("inf")
+    if allowed is not None:
+        logits = logits.masked_fill(~allowed.to(logits.device), -float("inf"))
     return logits.softmax(-1)
 
 
 @torch.no_grad()
 def entropy_budget_decode(model, x, tok, device, budget=0.5, max_steps=256,
-                          temperature=1.0, fillable=None, budget_cond=None):
+                          temperature=1.0, fillable=None, budget_cond=None,
+                          allowed=None):
     """FIX (ii): commit a set whose summed conditional entropy stays under `budget`.
 
     At each pass, rank the still-masked positions by conditional entropy and
@@ -560,7 +568,7 @@ def entropy_budget_decode(model, x, tok, device, budget=0.5, max_steps=256,
         nfe += 1
         if temperature != 1.0:
             logits = logits / temperature
-        probs = real_probs(logits, tok)
+        probs = real_probs(logits, tok, allowed)
         H = -(probs * probs.clamp_min(1e-9).log()).sum(-1)
         samp = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(B, L)
 
@@ -578,7 +586,8 @@ def entropy_budget_decode(model, x, tok, device, budget=0.5, max_steps=256,
 
 @torch.no_grad()
 def confidence_threshold_decode(model, x, tok, device, tau=0.9, max_steps=256,
-                                temperature=1.0, fillable=None, budget_cond=None):
+                                temperature=1.0, fillable=None, budget_cond=None,
+                          allowed=None):
     """The published inference-time competitor (confidence-threshold family).
 
     Commit every masked position whose top-1 probability exceeds `tau`. This is
@@ -601,7 +610,7 @@ def confidence_threshold_decode(model, x, tok, device, tau=0.9, max_steps=256,
         nfe += 1
         if temperature != 1.0:
             logits = logits / temperature
-        probs = real_probs(logits, tok)
+        probs = real_probs(logits, tok, allowed)
         conf = probs.max(-1).values
         samp = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(B, L)
 
@@ -617,7 +626,7 @@ def confidence_threshold_decode(model, x, tok, device, tau=0.9, max_steps=256,
 
 @torch.no_grad()
 def fixed_k_decode(model, x, tok, device, steps, temperature=1.0, fillable=None,
-                   budget_cond=None):
+                   budget_cond=None, allowed=None):
     """Plain K-pass decoding: reveal an equal share of positions per pass,
     highest-confidence first. The non-adaptive reference point, and the setting
     in which the addition results are reported."""
@@ -636,7 +645,7 @@ def fixed_k_decode(model, x, tok, device, steps, temperature=1.0, fillable=None,
         nfe += 1
         if temperature != 1.0:
             logits = logits / temperature
-        probs = real_probs(logits, tok)
+        probs = real_probs(logits, tok, allowed)
         conf = probs.max(-1).values.masked_fill(~masked, -float("inf"))
         samp = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(B, L)
 
