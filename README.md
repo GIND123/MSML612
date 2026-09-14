@@ -1,7 +1,10 @@
 # Two Failure Modes of Parallel Decoding in Masked Diffusion
 
 **Parallel decoding fails for two different reasons that need opposite fixes.
-Separating them is the method.**
+Telling them apart — exactly, with a bound — is the contribution.**
+
+This is a measurement paper. It contains one method that works where its
+assumption holds, one that failed, and a framework that says which is which.
 
 Trained from scratch. No pretrained weights, no pretrained tokenizer, no
 external teacher — including the evaluator used to score generated text.
@@ -38,13 +41,23 @@ objective removes this term without abandoning the data distribution.
 Conversely, no inference-time reordering repairs a marginal that was never fit.
 
 **Prior work applies inference-time fixes to both.** That is why it flatlines on
-arithmetic, where (ii) is identically zero and all the loss is (i). The method
-here fixes (i) at training time and composes with the correct (ii) fix at
-inference — and the two are measured separately.
+arithmetic, where (ii) is identically zero and all the loss is (i).
 
-## The method
+## What we tried, and what happened
 
-**Fix (i) — tell the model the budget it will be decoded at.**
+Summarised up front, because two of the three were negative and burying that
+would misrepresent the work:
+
+| | approach | verdict |
+|---|---|---|
+| fix (i), single budget | train at the mask ratios one known budget visits | **works, dramatically** — 99.9% against 0.0% at 20 digits, pending a compute control |
+| fix (i), all budgets | sample the budget and condition on it | **fails** — worse at every budget on graphs, destroys the task on addition |
+| fix (ii) | commit while summed conditional entropy stays under `B` nats | **mixed** — dominates fixed-`K` in some settings, ties in others |
+
+The framework itself — deciding which mode a given failure belongs to, and
+bounding how much of it is recoverable — is what survives all three.
+
+## Fix (i): train the schedule you intend to decode at
 
 A *K*-pass decode evaluates the model only at mask ratios `{1, (K−1)/K, …, 1/K}`.
 Standard MDLM draws `t ~ U(0,1)`, which is *uniform over the same range* — so the
@@ -61,9 +74,11 @@ roles reversed — intermediate partially-decoded states are off-distribution fo
 a model fitted only to `t = 1`. A method shaped like that can win one operating
 point but cannot dominate a quality-vs-compute curve.
 
-**Any-budget masked diffusion** removes the commitment. Sample the budget per
-example, draw `t` from that budget's schedule, and pass the budget to the
-denoiser as a log₂ embedding:
+### The attempted generalisation, which failed
+
+**Any-budget masked diffusion** was meant to remove that commitment: sample the
+budget per example, draw `t` from that budget's schedule, and pass the budget to
+the denoiser as a log₂ embedding.
 
 ```
 K ~ {1, 2, 4, …, 256}
@@ -71,13 +86,10 @@ t ~ {1, (K−1)/K, …, 1/K}
 loss = CE( model(x_t, budget=K), x₀ )
 ```
 
-It costs **one embedding lookup and no extra forward pass**, so it is cheaper
-than the fixed-`K` method it replaces.
-
-### It does not work
-
-Sampling the budget during training was my proposed fix for fixed-`K`'s
-commitment to one budget. Measured, it fails.
+It costs one embedding lookup and no extra forward pass, so it is cheaper than
+the fixed-`K` method — and it does not work. The result is reported here rather
+than dropped, because the reason it fails is the same arithmetic that explains
+why fixed-`K` succeeds.
 
 **20-digit addition**, against fixed-`K` (`K = 1`):
 
@@ -121,7 +133,15 @@ than a tuned heuristic: `B → 0` recovers sequential decoding, `B → ∞` reco
 one-shot parallel decoding, and the curve between them is the quality/compute
 trade-off. The number of passes becomes data-dependent, which is the point.
 
-Cost of (i): one embedding lookup, no extra forward pass. Cost of (ii): none.
+Measured across four graph families it is **competitive but not dominant**: it
+reaches points strictly better than fixed-`K` at equal or lower NFE in some
+configurations (100% validity at 11 passes where fixed-`K` needs 15) and merely
+ties in others. The earlier claim that it dominates fixed-`K` was based on one
+family and does not hold across all four.
+
+Cost of the working form of (i) — matching one known budget — is one extra
+forward pass per training step, which is what the compute-matched control in
+§5b exists to account for. Cost of (ii): none.
 
 ## What each regime isolates
 
@@ -129,9 +149,9 @@ Cost of (i): one embedding lookup, no extra forward pass. Cost of (ii): none.
 |---|---|---|---|---|
 | **Non-unique answer** | groups must agree, value free | absent | **maximal** | never — information-theoretic |
 | **Unique, shallow deps** | morphological inflection | small | small | mostly already works |
-| **Unique, deep deps** | *n*-digit addition | **dominant** | zero | fails → **the method fixes it** |
-| **Mixed** | natural text | present | present | **where the two must compose** |
-| **Exactly measurable** | structured graphs | present | **dominant** | **where the bound is verifiable** |
+| **Unique, deep deps** | *n*-digit addition | **dominant** | zero | fails → schedule matching fixes it, pending a compute control |
+| **Mixed** | natural text | present | present | where the two must compose *(running)* |
+| **Exactly measurable** | structured graphs | present | **dominant** | **where the bound is verifiable — this is what carries the paper** |
 
 ---
 
