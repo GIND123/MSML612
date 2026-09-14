@@ -109,19 +109,43 @@ long warmup, which matters — see §5.
 The 12- and 16-digit rows are true parallelism gaps: the baseline demonstrably
 learned the task and simply cannot commit it in one pass.
 
-**The 20-digit row is a different and stronger claim, and it is labelled as
-such.** There the baseline scores 0.0% at *every* budget tested — it never
-learned 20-digit addition at all, while the matched schedule reaches 99.9% on
-every seed. Uniform-`t` training puts so little signal at the top of the
-schedule that a 20-long carry chain never receives enough gradient where it
-matters, so fix (i) is acting as a **sample-efficiency** fix here, not only a
-parallelism fix. `src/seq_check.py` re-decodes every run at a budget equal to
-the number of answer slots to confirm the baseline fails sequentially too; the
-standard pass grid stops at 16, which for a 21-slot answer is not a sequential
-decode, so that check is required before the claim stands.
+**The 20- and 24-digit rows are a different and stronger claim, and are labelled
+as such.** The standard pass grid stops at 16, which for a 21-slot answer is not
+a sequential decode, so `src/seq_check.py` re-decodes every run at one token per
+pass. That settles it:
 
-24 digits is at the edge: one seed of three reaches 100%, the others near zero.
-Reported as the variance it is.
+| digits | mode | @1 pass | fully sequential | reading |
+|---|---|---|---|---|
+| 20 | MDLM | 0.0 | **0.0** | **never learned the task** |
+| 20 | ours | **99.8** | 85.7 | learned it |
+| 24 | MDLM | 0.0 | **0.0** | **never learned the task** |
+| 24 | ours | 33.7 | 33.3 | learned it |
+
+The baseline is at zero **at every budget, on every seed**. Beyond 16 digits it
+does not fail to *parallelise* — it fails to *learn*. Uniform-`t` training
+touches the fully-masked state with probability zero, and a 20-long carry chain
+never gets enough gradient where it matters. So at these lengths fix (i) is a
+**sample-efficiency** fix, not a parallelism fix, and the 99.8-vs-0.0 gap must
+not be quoted as the latter.
+
+24 digits remains at the edge: one seed of three reaches 100%, the others near
+zero. Reported as the variance it is.
+
+### The method inverts the trade rather than closing it
+
+At 20 digits our own model scores **99.8% at one pass but 85.7% at twenty**, and
+one seed drops from 99.5% to 57.0%. More passes make it *worse*.
+
+This is the mechanism running in reverse, and it is the strongest available
+evidence for the account. A model trained with mass at `t = 1` is fitted to the
+fully-masked state; walking it through intermediate partially-decoded states
+visits ratios it never trained on — exactly the baseline's disease, with the
+roles swapped. A method that simply dominated at every budget would be weaker
+evidence, because it would be consistent with "we just trained better".
+
+It also means the honest framing is not "we close the parallelism gap" but **"the
+schedule you train determines the budget you can decode at"**, in both
+directions.
 
 ### No inference-time method closes the gap
 
@@ -252,8 +276,19 @@ depth ≈ L·K.
 
 The account predicts minimum depth growing with **log n**, not n — cleanly
 distinguishable from a ripple-carry account (linear) or an impossibility account
-(no depth suffices). A depth sweep over {2,3,4,6,8,12} layers × {4,8,12,16}
-digits is running.
+(no depth suffices). Measured, over {2,3,4,6,8,12} layers × 2 seeds:
+
+| digits | minimum depth for >90% at one pass | ratio vs 4-digit |
+|---|---|---|
+| 4 | 2 | 1.0× |
+| 8 | 2 | 1.0× |
+| **12** | **3** | **1.5×** |
+
+The discriminating quantity is the ratio, not the absolute count (a wide layer
+folds several scan levels into one). At 12 digits a ripple-carry account predicts
+**3.0×** and the prefix-scan account predicts **1.79×**; the measurement is
+**1.5×**. Ripple-carry is excluded. The 16-digit row is the clincher: ~4 layers
+supports the scan account, ~8 supports linear growth.
 
 ## 6. A confound that nearly produced the wrong paper
 
@@ -327,9 +362,13 @@ python src/audit.py
 - On inflection the method **lowers** the 32-pass ceiling by 1.4 points while
   removing 59% of the one-pass penalty. That trade is inherent to
   reallocating the schedule and is reported, not hidden.
-- The 20-digit result is a sample-efficiency claim, not a parallelism claim,
-  until `seq_check.py` confirms the baseline also fails at full sequential
-  depth.
+- The 20- and 24-digit results are sample-efficiency claims, **not** parallelism
+  claims: `seq_check.py` confirms the baseline scores 0.0% at full sequential
+  depth too. Quoting them as parallelism gaps would misrepresent them.
+- Our own method loses accuracy when decoded at budgets far from the one it was
+  trained for (99.8% at one pass, 85.7% at twenty). This is predicted by the
+  account but it is a real limitation: the training `K` is a commitment to a
+  decoding budget, not a free win.
 - The answer region reveals whether the sum carries out (its width is *d* or
   *d*+1). Both arms receive this equally, so comparisons are unaffected, but it
   is one bit of leakage.
