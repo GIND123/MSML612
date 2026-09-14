@@ -44,28 +44,43 @@ inference — and the two are measured separately.
 
 ## The method
 
-**Fix (i) — schedule matching.** Draw the masking ratio from the ratios the
-intended decoding budget actually visits, `t ~ {1, (K−1)/K, …, 1/K}`, instead of
-`t ~ U(0,1)`.
+**Fix (i) — tell the model the budget it will be decoded at.**
 
-The precise mechanism matters and is easy to state wrongly. That discrete draw is
-*uniform over the same range*, so it does not broadly shift mass toward heavy
-masking. What it does is place an **atom of probability 1/K exactly at t = 1** —
-the fully-masked state, which is where every decode begins and which continuous
-`U(0,1)` hits with probability **zero**. Standard MDLM trains the state one-pass
-decoding starts from a measure-zero fraction of the time.
+A *K*-pass decode evaluates the model only at mask ratios `{1, (K−1)/K, …, 1/K}`.
+Standard MDLM draws `t ~ U(0,1)`, which is *uniform over the same range* — so the
+issue is not that uniform training under-weights heavy masking. It is that
+continuous `U(0,1)` places **probability zero on t = 1**, the fully-masked state
+every decode begins from. Drawing `t` from the discrete set instead puts an
+**atom of mass 1/K** exactly there.
 
-At `K = 1` the schedule degenerates to `t = 1` always: supervise the prediction
-made from the *fully masked* answer directly against ground truth. The addition
-experiments are that `K = 1` special case. One principle, task-appropriate `K`.
+Matching a *single* `K` works, and it is what the addition results below use
+(`K = 1`, i.e. always `t = 1`). But it is a **commitment to one decoding
+budget**, and we measured the price: a model trained for one pass scores 99.8%
+at one pass and **85.7% at twenty**. That is the baseline's own disease with the
+roles reversed — intermediate partially-decoded states are off-distribution for
+a model fitted only to `t = 1`. A method shaped like that can win one operating
+point but cannot dominate a quality-vs-compute curve.
 
-This yields a second, sharper prediction: **the training `K` should match the
-decoding budget you intend to use.** Addition is decoded in one pass, so `K = 1`
-is right and heavier emphasis at `t = 1` is pure gain. Text at a moderate budget
-is not, and over-concentrating at `t = 1` — where an unconditional model can only
-learn character frequencies — should actively *hurt*. §3 runs `mdlm`, `matched`
-and a `t = 1`-heavy variant precisely to test that, and a result where the
-`t = 1`-heavy variant loses on text is a confirmation, not a failure.
+**Any-budget masked diffusion** removes the commitment. Sample the budget per
+example, draw `t` from that budget's schedule, and pass the budget to the
+denoiser as a log₂ embedding:
+
+```
+K ~ {1, 2, 4, …, 256}
+t ~ {1, (K−1)/K, …, 1/K}
+loss = CE( model(x_t, budget=K), x₀ )
+```
+
+One network then serves every budget instead of a family of networks each good
+at a single point. It costs **one embedding lookup and no extra forward pass**,
+which makes it cheaper than the fixed-`K` method it replaces — that one needed
+two passes per step.
+
+The ablation `anybudget_nc` samples `K` identically but withholds the
+conditioning, which separates *mixing* budgets from *knowing* the budget. Both
+arms are running; the prediction is that mixing alone improves the sequential
+end while giving back the one-pass end, because one set of weights is then
+serving contradictory targets, and that conditioning is what recovers both.
 
 **Fix (ii) — entropy-budgeted commitment.** At each pass, rank still-masked
 positions by conditional entropy and commit the longest low-entropy prefix whose
@@ -75,7 +90,7 @@ than a tuned heuristic: `B → 0` recovers sequential decoding, `B → ∞` reco
 one-shot parallel decoding, and the curve between them is the quality/compute
 trade-off. The number of passes becomes data-dependent, which is the point.
 
-Cost of (i): one extra forward pass per training step. Cost of (ii): none.
+Cost of (i): one embedding lookup, no extra forward pass. Cost of (ii): none.
 
 ## What each regime isolates
 

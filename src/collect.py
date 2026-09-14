@@ -27,8 +27,10 @@ for f in sorted(glob.glob(f"{RUNS}/*/result.json")):
 print(f"collected {len(R)} runs")
 
 MODE = {"mdlm": "MDLM baseline", "matched": "+ schedule matching",
-        "distill": "+ one-pass supervision", "full": "full method",
-        "prog": "parallelism curriculum"}
+        "distill": "+ one-pass supervision", "full": "fixed-K (K=1)",
+        "prog": "parallelism curriculum",
+        "anybudget": "any-budget (conditioned)",
+        "anybudget_nc": "any-budget (no conditioning)"}
 COL = {"mdlm": "#c0392b", "matched": "#e67e22",
        "distill": "#2980b9", "full": "#1a5276", "prog": "#117a65"}
 
@@ -310,6 +312,29 @@ if t8:
     ax.set_title("Quality against compute: do the two fixes compose?")
     ax.legend(fontsize=7); ax.grid(alpha=.3)
     fig.tight_layout(); fig.savefig(f"{OUT}/fig4_text8_quality_vs_compute.png", dpi=160)
+
+# ---- Table 9b: does budget conditioning remove the crossover? --------------
+g18 = runs("g18-")
+if g18:
+    md.append("## Table 9b — Any-budget conditioning vs a fixed budget\n")
+    md.append("20-digit addition, one configuration. A fixed-K method wins at the "
+              "budget it was trained for and loses away from it; the question is "
+              "whether conditioning on the budget removes that trade.\n")
+    md.append("| training | @1 pass | @sequential | spread |")
+    md.append("|---|---|---|---|")
+    rows = {}
+    for r in g18 + runs("g13-", digits=20):
+        rows.setdefault(r["args"]["mode"], []).append(r)
+    for mode in ("mdlm", "full", "anybudget_nc", "anybudget"):
+        rs = rows.get(mode)
+        if not rs:
+            continue
+        one = np.mean([r["accuracy_by_passes"]["1"] for r in rs]) * 100
+        keys = [int(k) for k in rs[0]["accuracy_by_passes"]]
+        seq = np.mean([r["accuracy_by_passes"][str(max(keys))] for r in rs]) * 100
+        md.append(f"| {MODE.get(mode, mode)} | {one:.1f} | {seq:.1f} | "
+                  f"{abs(one-seq):.1f} |")
+    md.append("")
 
 # ---- Table 9: failed to parallelise, or failed to learn? -------------------
 sc = os.path.join(OUT, "seq_check_g13.json")
