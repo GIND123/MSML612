@@ -13,6 +13,7 @@ Every published fix reorders or gates commits at INFERENCE. The model has still
 never seen a partially-decoded state containing its own correlated mistakes.
 `self_corrupted_loss` changes that at training time.
 """
+import math
 import torch
 import torch.nn.functional as F
 
@@ -432,3 +433,39 @@ def cond_decode(model, x0, amask, tok, steps, device):
     if rem.any() and pred is not None:
         x[rem] = pred[rem]
     return x
+
+
+def pmd_progressive(model, x0, amask, tok, progress, K_max=16, lam_max=1.0,
+                    anneal="log"):
+    """PARALLELISM CURRICULUM - the fix for the instability at long chains.
+
+    Supervising the fully-masked one-pass prediction from step 0 is a very hard
+    objective for a long carry chain: at 8 digits every seed found it, at 12 most
+    collapsed to zero. The target is right but the optimisation is not reachable
+    from random initialisation in one jump.
+
+    So we anneal along the parallelism axis instead. Early training is decoded
+    over many passes, where each pass reads the digits already written and the
+    chain unrolls cheaply. K then halves toward 1, each stage a small increment
+    from the last, while the one-pass term is ramped in rather than imposed.
+    This is progressive distillation's schedule applied to the number of
+    PARALLEL commits rather than the number of noise levels, and unlike prior
+    step-distillation work it runs inside pretraining from scratch.
+
+    Addition's carry is a prefix scan, so a log-depth solution exists (carry
+    lookahead) - the curriculum is about making it discoverable, not about
+    adding capacity.
+
+    progress in [0,1]; returns (loss, K_now, lam_now) so the schedule is logged.
+    """
+    if anneal == "log":
+        # 16 -> 8 -> 4 -> 2 -> 1, equal time per halving
+        K_now = max(1, int(K_max / (2 ** int(progress * (math.log2(K_max) + 1e-9)))))
+    else:
+        K_now = max(1, int(round(K_max * (1 - progress) + 1 * progress)))
+    lam_now = lam_max * min(1.0, max(0.0, (progress - 0.25) / 0.5))
+
+    loss = cond_mdlm_loss(model, x0, amask, tok, "matched", K_now)
+    if lam_now > 0:
+        loss = loss + lam_now * sequential_distill_loss(model, x0, amask, tok)
+    return loss, K_now, lam_now

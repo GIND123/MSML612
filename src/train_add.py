@@ -20,7 +20,9 @@ import diffusion as dfn
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["mdlm", "matched", "distill", "full"], default="mdlm")
+    p.add_argument("--mode", choices=["mdlm", "matched", "distill", "full", "prog"],
+                   default="mdlm", help="prog = parallelism curriculum (the method)")
+    p.add_argument("--K_max", type=int, default=16)
     p.add_argument("--K", type=int, default=8, help="parallelism the schedule is matched to")
     p.add_argument("--lam", type=float, default=1.0, help="one-pass supervision weight")
     p.add_argument("--digits", type=int, default=6)
@@ -97,12 +99,18 @@ def main():
         xb, ab = X[idx].to(dev), A[idx].to(dev)
         opt.zero_grad(set_to_none=True)
         with torch.autocast(**amp):
-            loss = dfn.pmd_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
+            if a.mode == "prog":
+                loss, K_now, lam_now = dfn.pmd_progressive(
+                    model, xb, ab, tok, step / max(1, a.steps), a.K_max, a.lam)
+            else:
+                loss = dfn.pmd_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step(); sched.step()
         if step % 2000 == 0:
-            print(f"step {step:6d} loss {loss.item():.4f} ({time.time()-t0:.0f}s)", flush=True)
+            extra = f" K={K_now} lam={lam_now:.2f}" if a.mode == "prog" else ""
+            print(f"step {step:6d} loss {loss.item():.4f}{extra} "
+                  f"({time.time()-t0:.0f}s)", flush=True)
 
     acc = evaluate(model, a, tok, dev)
     n_par = model.n_params()
