@@ -153,8 +153,17 @@ long warmup, which matters — see §5.
 | **20** | **0.0** | **99.9** | 0/3 → **3/3** |
 | 24 | 0.0 | 33.6 | 0/3 → 1/3 |
 
-The 12- and 16-digit rows are true parallelism gaps: the baseline demonstrably
-learned the task and simply cannot commit it in one pass.
+> **⚠ The 16-digit row is under revision.** A compute-matched control — the
+> plain baseline given **double** the training steps at the same depth — reaches
+> **100.0% at one pass on 16 digits**. The 25.0% figure below comes from a
+> smaller configuration (10 layers, 60k steps) in which *both* arms were
+> undertrained, so that gap reflects capacity and training, not the method. A
+> same-configuration comparison at 12 and 16 digits is running. **Do not quote
+> the 16-digit gap until it lands.**
+
+The 12-digit row is a parallelism gap: the baseline demonstrably learned the task
+and simply cannot commit it in one pass. The 16-digit row is in question, per the
+note above.
 
 **The 20- and 24-digit rows are a different and stronger claim, and are labelled
 as such.** The standard pass grid stops at 16, which for a 21-slot answer is not
@@ -439,6 +448,32 @@ The 16-digit transition is also a clean threshold rather than a gradual ramp —
 **0% at two layers, 100% at three** — which is the signature of a computation
 that is depth-limited rather than capacity-limited or data-limited. The minimum
 depth is now determined at every length tested.
+
+## 5b. The compute-matched control
+
+The method evaluates the model twice per training step, so at equal step counts
+it spends roughly twice the baseline's training FLOPs. Any gap is therefore
+confounded with compute until the baseline is given the larger budget. This
+control gives the baseline **300k steps against the method's 150k**, at the same
+depth.
+
+| digits | arm | steps | @1 pass | seeds |
+|---|---|---|---|---|
+| 16 | **MDLM baseline, 2× compute** | 300k | **100.0** | 1 |
+| 20 | MDLM baseline | 150k | 0.0 | 3 |
+| 20 | full method | 150k | **99.9** | 3 |
+| 24 | MDLM baseline | 150k | 0.0 | 3 |
+| 24 | full method | 150k | 33.6 | 3 |
+
+**At 16 digits the control already overturns a headline number**: given enough
+training the baseline solves the task outright, so the 25% → 75% gap reported
+from the smaller configuration was capacity and training rather than method.
+
+The 20-digit row is the one the claim now rests on, and it is not yet settled
+either — the baseline there has only been run at 150k. The 300k arm at 20 digits
+is running, and if it also reaches ~100% then the addition result reduces to a
+statement about sample efficiency rather than about parallel decoding at all.
+That is the honest reading of a control that has already cost us one number.
 
 ## 6. A confound that nearly produced the wrong paper
 
