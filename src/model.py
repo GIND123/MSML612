@@ -93,10 +93,22 @@ class Block(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, vocab, d=384, n_layers=6, n_heads=6, pe="ape", causal=False, max_len=256):
+    def __init__(self, vocab, d=384, n_layers=6, n_heads=6, pe="ape", causal=False,
+                 max_len=256, budget_bins=0):
         super().__init__()
         self.pe_kind, self.causal = pe, causal
+        self.budget_bins = budget_bins
         self.emb = nn.Embedding(vocab, d)
+        # Budget conditioning. A K-pass decode only visits mask ratios
+        # {1, (K-1)/K, ..., 1/K}, so a model trained for one K is mis-specified
+        # at every other K - measured directly: our 20-digit model scores 99.8%
+        # at one pass and 85.7% at twenty. Telling the model which budget it is
+        # being decoded at lets ONE network serve every budget instead of a
+        # family of networks each good at a single point.
+        # budget_bins=0 keeps the parameter absent entirely, so checkpoints
+        # trained before this existed still load.
+        if budget_bins:
+            self.budget_emb = nn.Embedding(budget_bins, d)
         # Segment embedding: which part of the equation a token belongs to.
         # Place-value ids deliberately collide across operands and answer, so a
         # bidirectional model needs this to tell those tokens apart; a causal
@@ -118,9 +130,26 @@ class Transformer(nn.Module):
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, idx, pad_mask=None, pos_ids=None):
+    @staticmethod
+    def budget_bin(K, n_bins, device):
+        """Map a decoding budget K to a bin index by log2, clamped.
+
+        Budgets are used on a log scale (1, 2, 4, ... L), so log2 is the natural
+        parameterisation and keeps the table small.
+        """
+        if not torch.is_tensor(K):
+            K = torch.as_tensor(K, device=device)
+        K = K.to(device).float().clamp_min(1.0)
+        return torch.log2(K).round().long().clamp_(0, n_bins - 1)
+
+    def forward(self, idx, pad_mask=None, pos_ids=None, budget=None):
         B, L = idx.shape
         x = self.emb(idx)
+        if self.budget_bins and budget is not None:
+            b = self.budget_bin(budget, self.budget_bins, idx.device)
+            if b.ndim == 0:
+                b = b.expand(B)
+            x = x + self.budget_emb(b)[:, None, :]
         if self.pe_kind == "ape":
             p = torch.arange(L, device=idx.device)[None] if pos_ids is None else pos_ids
             x = x + self.pos(p)

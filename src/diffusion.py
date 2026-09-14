@@ -532,7 +532,7 @@ def real_probs(logits, tok):
 
 @torch.no_grad()
 def entropy_budget_decode(model, x, tok, device, budget=0.5, max_steps=256,
-                          temperature=1.0, fillable=None):
+                          temperature=1.0, fillable=None, budget_cond=None):
     """FIX (ii): commit a set whose summed conditional entropy stays under `budget`.
 
     At each pass, rank the still-masked positions by conditional entropy and
@@ -556,7 +556,7 @@ def entropy_budget_decode(model, x, tok, device, budget=0.5, max_steps=256,
         has = masked.any(1)
         if not has.any():
             break
-        logits = model(x)
+        logits = model(x, budget=budget_cond)
         nfe += 1
         if temperature != 1.0:
             logits = logits / temperature
@@ -578,7 +578,7 @@ def entropy_budget_decode(model, x, tok, device, budget=0.5, max_steps=256,
 
 @torch.no_grad()
 def confidence_threshold_decode(model, x, tok, device, tau=0.9, max_steps=256,
-                                temperature=1.0, fillable=None):
+                                temperature=1.0, fillable=None, budget_cond=None):
     """The published inference-time competitor (confidence-threshold family).
 
     Commit every masked position whose top-1 probability exceeds `tau`. This is
@@ -597,7 +597,7 @@ def confidence_threshold_decode(model, x, tok, device, tau=0.9, max_steps=256,
         has = masked.any(1)
         if not has.any():
             break
-        logits = model(x)
+        logits = model(x, budget=budget_cond)
         nfe += 1
         if temperature != 1.0:
             logits = logits / temperature
@@ -616,7 +616,8 @@ def confidence_threshold_decode(model, x, tok, device, tau=0.9, max_steps=256,
 
 
 @torch.no_grad()
-def fixed_k_decode(model, x, tok, device, steps, temperature=1.0, fillable=None):
+def fixed_k_decode(model, x, tok, device, steps, temperature=1.0, fillable=None,
+                   budget_cond=None):
     """Plain K-pass decoding: reveal an equal share of positions per pass,
     highest-confidence first. The non-adaptive reference point, and the setting
     in which the addition results are reported."""
@@ -631,7 +632,7 @@ def fixed_k_decode(model, x, tok, device, steps, temperature=1.0, fillable=None)
         has = masked.any(1)
         if not has.any():
             break
-        logits = model(x)
+        logits = model(x, budget=budget_cond)
         nfe += 1
         if temperature != 1.0:
             logits = logits / temperature
@@ -691,3 +692,110 @@ def text_loss(model, x0, tok, mode="mdlm", K=8, lam=1.0):
         return uncond_mdlm_loss(model, x0, tok, "matched", K)
     base = uncond_mdlm_loss(model, x0, tok, "matched", K)
     return base + lam * uncond_mdlm_loss(model, x0, tok, "matched", 2)
+
+
+# ------------------------------------------------ any-budget masked diffusion ---
+# The limitation the fixed-K method has, stated plainly: training at a single K
+# is a COMMITMENT to one decoding budget. Measured on 20-digit addition, a model
+# trained for one pass scores 99.8% at one pass and 85.7% at twenty - the
+# baseline's own disease with the roles swapped, because intermediate
+# partially-decoded states are themselves off-distribution for it.
+#
+# That makes a fixed-K method unable to dominate a quality-vs-compute frontier:
+# it wins at K and loses away from K. Since the frontier is precisely the axis
+# the parallel-decoding literature competes on, fixing this is what turns a
+# single good operating point into a curve that dominates.
+#
+# The fix: sample K during training and TELL the model which K it is being
+# trained for. One network then serves every budget. Cost is one embedding
+# lookup and no extra forward passes, so it is cheaper than the fixed-K method
+# it replaces.
+
+BUDGETS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+
+
+def sample_budget(B, device, choices=BUDGETS, weights=None):
+    """Draw a decoding budget per example.
+
+    Per-example rather than per-batch so a single step covers many budgets,
+    which keeps the gradient signal for every bin alive at every step.
+    """
+    c = torch.as_tensor(choices, device=device, dtype=torch.float)
+    if weights is None:
+        idx = torch.randint(0, len(c), (B,), device=device)
+    else:
+        w = torch.as_tensor(weights, device=device, dtype=torch.float)
+        idx = torch.multinomial(w.expand(B, -1), 1).squeeze(1)
+    return c[idx]
+
+
+def _t_for_budget(K):
+    """Draw t from the mask ratios a K-pass decode actually visits.
+
+    A K-pass decode evaluates the model at {1, (K-1)/K, ..., 1/K}. Drawing the
+    step index uniformly in [1, K] and dividing reproduces exactly that set,
+    including the atom at t = 1 that continuous U(0,1) never supplies.
+    """
+    step = (torch.rand_like(K) * K).floor() + 1.0
+    return (step / K).clamp(1e-6, 1.0)
+
+
+def cond_any_budget_loss(model, x0, amask, tok, choices=BUDGETS, condition=True):
+    """Any-budget objective for conditional tasks (addition, inflection)."""
+    B = x0.shape[0]
+    dev = x0.device
+    K = sample_budget(B, dev, choices)
+    t = _t_for_budget(K)
+
+    m = _cond_mask(x0, amask, tok, t)
+    xt = torch.where(m, torch.full_like(x0, tok.mask), x0)
+    logits = model(xt, budget=K if condition else None)
+    ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), x0.reshape(-1),
+                         reduction="none").view(B, -1)
+    return ((ce * m).sum(1) / m.sum(1).clamp_min(1)).mean()
+
+
+def uncond_any_budget_loss(model, x0, tok, choices=BUDGETS, condition=True):
+    """Any-budget objective for unconditional text.
+
+    Keeps the 1/t ELBO weighting so that, with a uniform-t schedule and no
+    conditioning, this reduces exactly to the published MDLM objective.
+    """
+    B, L = x0.shape
+    dev = x0.device
+    K = sample_budget(B, dev, choices)
+    t = _t_for_budget(K)
+
+    m = torch.rand(B, L, device=dev) < t[:, None]
+    m[torch.arange(B, device=dev), torch.randint(0, L, (B,), device=dev)] = True
+    xt = torch.where(m, torch.full_like(x0, tok.mask), x0)
+    logits = model(xt, budget=K if condition else None)
+    ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), x0.reshape(-1),
+                         reduction="none").view(B, L)
+    return ((1.0 / t) * (ce * m).sum(1) / L).mean()
+
+
+@torch.no_grad()
+def cond_decode_budget(model, x0, amask, tok, steps, device, condition=True):
+    """`cond_decode`, but the model is told the budget it is being run at."""
+    x = torch.where(amask, torch.full_like(x0, tok.mask), x0).to(device)
+    am = amask.to(device)
+    B, L = x.shape
+    n_ans = int(am[0].sum())
+    bud = torch.full((B,), float(steps), device=device) if condition else None
+    pred = None
+    for s in range(steps, 0, -1):
+        masked = (x == tok.mask) & am
+        if not masked.any():
+            break
+        conf, pred = real_probs(model(x, budget=bud), tok).max(-1)
+        conf = conf.masked_fill(~masked, -1e9)
+        left = int(n_ans * (s - 1) / steps)
+        for b in range(B):
+            k = max(0, int(masked[b].sum()) - left)
+            if k:
+                x[b, conf[b].topk(k).indices] = pred[b, conf[b].topk(k).indices]
+    rem = (x == tok.mask) & am
+    if rem.any() and pred is not None:
+        x[rem] = pred[rem]
+    return x

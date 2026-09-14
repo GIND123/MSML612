@@ -20,8 +20,15 @@ import diffusion as dfn
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["mdlm", "matched", "distill", "full", "prog"],
-                   default="mdlm", help="prog = parallelism curriculum (the method)")
+    p.add_argument("--mode",
+                   choices=["mdlm", "matched", "distill", "full", "prog",
+                            "anybudget", "anybudget_nc"],
+                   default="mdlm",
+                   help="anybudget = sample K and condition on it (the method); "
+                        "anybudget_nc = same K sampling WITHOUT conditioning, "
+                        "the ablation that isolates what conditioning buys")
+    p.add_argument("--budget_bins", type=int, default=10,
+                   help="log2 bins for budget conditioning; 0 disables")
     p.add_argument("--K_max", type=int, default=16)
     p.add_argument("--K", type=int, default=8, help="parallelism the schedule is matched to")
     p.add_argument("--lam", type=float, default=1.0, help="one-pass supervision weight")
@@ -57,15 +64,25 @@ def exact_match(pred, gold, amask, tok):
 
 @torch.no_grad()
 def evaluate(model, a, tok, device):
+    """Accuracy across the whole pass grid.
+
+    The grid now runs out to a FULLY SEQUENTIAL decode (one token per pass), not
+    just 16: a 20-digit answer has 21 slots, so stopping at 16 never measures
+    sequential decoding at all and cannot tell "failed to parallelise" apart
+    from "failed to learn".
+    """
     model.eval()
     out = {}
     X, A, _ = build_addition(a.n_eval, a.digits, a.seq_len, seed=90_000, exact=True)
     X, A = torch.from_numpy(X), torch.from_numpy(A)
-    for steps in PASS_GRID:
+    cond = getattr(model, "budget_bins", 0) > 0
+    grid = sorted(set(PASS_GRID) | {int(A[0].sum())})
+    for steps in grid:
         accs = []
         for i in range(0, len(X), a.eval_bs):
             xb, ab = X[i:i + a.eval_bs].to(device), A[i:i + a.eval_bs].to(device)
-            pred = dfn.cond_decode(model, xb, ab, tok, steps, device)
+            pred = (dfn.cond_decode_budget(model, xb, ab, tok, steps, device)
+                    if cond else dfn.cond_decode(model, xb, ab, tok, steps, device))
             accs.append(exact_match(pred.cpu(), xb.cpu(), ab.cpu(), tok))
         out[str(steps)] = float(np.mean(accs))
     model.train()
@@ -81,8 +98,10 @@ def main():
     X, A, tok = build_addition(a.n_train, a.digits, a.seq_len, seed=a.seed)
     X, A = torch.from_numpy(X), torch.from_numpy(A)
 
+    cond = a.mode == "anybudget"
     model = Transformer(len(tok), a.d, a.layers, a.heads, a.pe,
-                        causal=False, max_len=a.seq_len + 8).to(dev)
+                        causal=False, max_len=a.seq_len + 8,
+                        budget_bins=a.budget_bins if cond else 0).to(dev)
     print(f"[{a.mode}] params={model.n_params()/1e6:.2f}M digits<={a.digits} "
           f"K={a.K} device={dev}", flush=True)
 
@@ -102,6 +121,9 @@ def main():
             if a.mode == "prog":
                 loss, K_now, lam_now = dfn.pmd_progressive(
                     model, xb, ab, tok, step / max(1, a.steps), a.K_max, a.lam)
+            elif a.mode in ("anybudget", "anybudget_nc"):
+                loss = dfn.cond_any_budget_loss(model, xb, ab, tok,
+                                                condition=cond)
             else:
                 loss = dfn.pmd_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
         loss.backward()

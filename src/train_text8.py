@@ -40,7 +40,10 @@ import diffusion as dfn
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["mdlm", "matched", "full"], default="mdlm")
+    p.add_argument("--mode",
+                   choices=["mdlm", "matched", "full", "anybudget", "anybudget_nc"],
+                   default="mdlm")
+    p.add_argument("--budget_bins", type=int, default=10)
     p.add_argument("--K", type=int, default=8, help="parallelism the schedule is matched to")
     p.add_argument("--lam", type=float, default=1.0)
     p.add_argument("--root", default="data/text8")
@@ -70,8 +73,10 @@ tr, va, te, tok = load_text8(a.root, a.seq_len)
 print(f"text8: train {tr.shape} valid {va.shape} test {te.shape} vocab {len(tok)}",
       flush=True)
 
-model = Transformer(len(tok), a.d, a.layers, a.heads, "rope",
-                    causal=False, max_len=a.seq_len + 8).to(dev)
+COND = a.mode == "anybudget"
+model = Transformer(len(tok), a.d, a.layers, a.heads, "rope", causal=False,
+                    max_len=a.seq_len + 8,
+                    budget_bins=a.budget_bins if COND else 0).to(dev)
 print(f"denoiser params: {sum(q.numel() for q in model.parameters())/1e6:.1f}M", flush=True)
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01, betas=(0.9, 0.95))
 sched = torch.optim.lr_scheduler.LambdaLR(
@@ -82,7 +87,10 @@ t0 = time.time()
 for step in range(a.steps):
     x = torch.from_numpy(next(it)).to(dev)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=(dev == "cuda")):
-        loss = dfn.text_loss(model, x, tok, a.mode, a.K, a.lam)
+        if a.mode in ("anybudget", "anybudget_nc"):
+            loss = dfn.uncond_any_budget_loss(model, x, tok, condition=COND)
+        else:
+            loss = dfn.text_loss(model, x, tok, a.mode, a.K, a.lam)
     opt.zero_grad(set_to_none=True)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -176,23 +184,30 @@ def evaluate(tag, fn):
 print("\n=== decoding: quality against compute ===", flush=True)
 res["decode"] = {}
 
+def bud(K):
+    """The budget to declare to the model, or None if it is not conditioned."""
+    return (torch.full((a.gen_bs,), float(K), device=dev)) if COND else None
+
+
 print("fixed-K (non-adaptive reference):", flush=True)
 for K in (1, 2, 4, 8, 16, 32, 64, 128, 256):
     res["decode"][f"fixedK_{K}"] = evaluate(
         f"fixed-K K={K}",
-        lambda b, K=K: dfn.fixed_k_decode(model, b, tok, dev, K))
+        lambda b, K=K: dfn.fixed_k_decode(model, b, tok, dev, K, budget_cond=bud(K)))
 
 print("confidence-threshold (published inference-time method):", flush=True)
 for tau in (0.5, 0.7, 0.9, 0.95, 0.99):
     res["decode"][f"conf_{tau}"] = evaluate(
         f"confidence tau={tau}",
-        lambda b, tau=tau: dfn.confidence_threshold_decode(model, b, tok, dev, tau))
+        lambda b, tau=tau: dfn.confidence_threshold_decode(
+            model, b, tok, dev, tau, budget_cond=bud(8)))
 
 print("entropy-budget (ours, fix (ii)):", flush=True)
 for B in (0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0):
     res["decode"][f"entbudget_{B}"] = evaluate(
         f"entropy-budget B={B}",
-        lambda b, B=B: dfn.entropy_budget_decode(model, b, tok, dev, B))
+        lambda b, B=B: dfn.entropy_budget_decode(
+            model, b, tok, dev, B, budget_cond=bud(8)))
 
 torch.save(model.state_dict(), os.path.join(a.out, "model.pt"))
 json.dump(res, open(os.path.join(a.out, "result.json"), "w"), indent=2)

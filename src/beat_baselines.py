@@ -138,14 +138,15 @@ print(f"{'strategy':<22}{'1 pass':>9}{'2':>8}{'4':>8}{'8':>8}{'16':>8}")
 ITEMS = {}
 for strat, tau in [("confidence", None), ("entropy", None), ("entropy-gated", 0.5),
                    ("margin", None), ("random", None)]:
-    row = []
+    row, row_items = [], []
     for steps in (1, 2, 4, 8, 16):
-        vals = []
-        for d in base_dirs:
-            m, _ = load(d)
-            vals.append(run(m, steps, "entropy" if strat == "entropy-gated" else strat, tau))
-        row.append(float(np.mean(vals)))
+        vals = [run(load(d)[0], steps,
+                    "entropy" if strat == "entropy-gated" else strat, tau)
+                for d in base_dirs]
+        per = np.mean(np.stack(vals), axis=0)   # per-item, averaged over seeds
+        row.append(float(per.mean())); row_items.append(per)
     results["inference_time_on_baseline"][strat] = row
+    ITEMS[strat] = row_items
     print(f"{strat:<22}" + "".join(f"{v*100:8.1f}" for v in row))
 
 row, ours_items = [], []
