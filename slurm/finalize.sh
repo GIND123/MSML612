@@ -43,16 +43,23 @@ for d in $STAR/runs/*/; do
 done
 echo "  results backed up: $(ls $HOME_BK/results | wc -l)"
 
-echo "=== 3. back up weights to SHELL (not purged) ==="
-if mkdir -p $SHELL_BK 2>/dev/null; then
-  for d in $STAR/runs/*/; do
-    n=$(basename $d)
-    [ -f "$d/model.pt" ] && cp -f "$d/model.pt" "$SHELL_BK/$n.pt" 2>/dev/null
-  done
-  echo "  weights backed up: $(ls $SHELL_BK 2>/dev/null | wc -l)"
-else
-  echo "  SHELL not writable from this node - weights remain on scratch"
-fi
+echo "=== 3. back up weights to HOME (nightly-backed-up) ==="
+# SHELL was the original target but /afs/shell.umd.edu/project/msml612 is
+# drwx------ and owned by root, so it is unwritable from BOTH login and compute
+# nodes - every previous run skipped this step silently. HOME is the tier that
+# is actually backed up nightly and has ample free space for the weights.
+mkdir -p $HOME_BK/weights
+n=0
+for d in $STAR/runs/*/; do
+  b=$(basename $d)
+  if [ -f "$d/model.pt" ]; then
+    # copy only when missing or newer, so repeated finalize runs stay cheap
+    if [ ! -f "$HOME_BK/weights/$b.pt" ] || [ "$d/model.pt" -nt "$HOME_BK/weights/$b.pt" ]; then
+      cp -f "$d/model.pt" "$HOME_BK/weights/$b.pt" && n=$((n+1))
+    fi
+  fi
+done
+echo "  weights copied this run: $n  (total: $(ls $HOME_BK/weights 2>/dev/null | wc -l), $(du -sh $HOME_BK/weights 2>/dev/null | cut -f1))"
 
 echo "=== 4. push to Hugging Face (with retries) ==="
 # A transient network failure must not mean the results never reach the Hub, so
@@ -72,16 +79,30 @@ table = summary.read_text() if summary.exists() else "_(pending)_"
 
 (stage / "README.md").write_text(f"""---
 license: apache-2.0
-tags: [masked-diffusion, discrete-diffusion, length-generalization, positional-encoding, from-scratch]
+tags: [masked-diffusion, discrete-diffusion, parallel-decoding, text8, from-scratch]
 ---
 
-# Length Generalization in Masked Diffusion Language Models
+# Two Failure Modes of Parallel Decoding in Masked Diffusion
 
-From-scratch masked diffusion language models (MDLM-style absorbing state) and
-matched autoregressive baselines, trained on arithmetic and algorithmic tasks and
-evaluated far beyond the lengths seen in training.
+Parallel decoding in masked diffusion loses accuracy for two different reasons
+that need opposite fixes:
 
-**No pretrained weights or tokenizers are used anywhere.**
+1. **The marginals are untrained at high mask ratio.** A K-pass decode only ever
+   evaluates the model at mask ratios {{1, (K-1)/K, ..., 1/K}}, while uniform-t
+   training spends most of its capacity on nearly-complete states that
+   high-parallelism decoding never visits. **Fixable only at training time.**
+2. **The committed positions carry real mutual information.** Parallel decoding
+   samples the product of marginals; the truth is the joint. The discarded
+   dependence is the total correlation of the committed set, upper-bounded by
+   its summed conditional entropy. **Fixable only at inference, by committing
+   less.**
+
+Prior work applies inference-time fixes to both, which is why it flatlines on
+arithmetic - where mode 2 is identically zero and all the loss is mode 1.
+
+Everything is trained from scratch: no pretrained weights, no pretrained
+tokenizer, and the autoregressive evaluator used to score generated text is
+itself trained from scratch on the same corpus.
 
 Code: https://github.com/GIND123/MSML612
 
