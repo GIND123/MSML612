@@ -44,6 +44,8 @@ def get_args():
     p.add_argument("--mode", choices=["mdlm", "anybudget", "anybudget_nc"],
                    default="mdlm")
     p.add_argument("--budget_bins", type=int, default=8)
+    p.add_argument("--pe", default="rope", choices=["rope", "ape", "sin", "alibi", "nope"],
+                   help="position encoding; decisive at the fully-masked state")
     p.add_argument("--d", type=int, default=256)
     p.add_argument("--layers", type=int, default=6)
     p.add_argument("--heads", type=int, default=8)
@@ -77,9 +79,9 @@ print(f"  V* ceiling   = {stats['one_pass_ceiling']*100:.4f}%   "
 X = torch.from_numpy(sample(a.family, a.n, 200_000, seed=a.seed))
 
 COND = a.mode == "anybudget"
-model = Transformer(len(tok), a.d, a.layers, a.heads, "rope", causal=False,
+model = Transformer(len(tok), a.d, a.layers, a.heads, a.pe, causal=False,
                     max_len=E + 8, budget_bins=a.budget_bins if COND else 0).to(dev)
-print(f"params {model.n_params()/1e6:.2f}M  mode={a.mode}", flush=True)
+print(f"params {model.n_params()/1e6:.2f}M  mode={a.mode}  pe={a.pe}", flush=True)
 
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
 sched = torch.optim.lr_scheduler.LambdaLR(
