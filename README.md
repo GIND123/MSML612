@@ -122,6 +122,20 @@ The random-order row is the cleanest statement of it: choosing positions at
 random does as well as every principled ordering heuristic, because ordering is
 not what is broken.
 
+### Figures
+
+![Addition frontier](figures/fig1_addition_frontier.png)
+
+**Figure 1.** Exact match at a single forward pass against the length of the
+carry chain. The two curves are identical until one pass stops sufficing, then
+separate sharply.
+
+![Accuracy vs passes](figures/fig2_accuracy_vs_passes.png)
+
+**Figure 2.** Accuracy against number of denoising passes. The baseline is flat
+and low; the method is flat and high. Neither improves with more passes, which
+is the point: extra passes do not supply what training omitted.
+
 ## 4. The method
 
 ```
