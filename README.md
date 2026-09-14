@@ -87,6 +87,41 @@ The gap opens exactly where the carry chain outgrows what one forward pass can
 compute, and the method closes it — **sixteen inference passes collapse to one,
 with accuracy going up rather than down.**
 
+## 3b. Head-to-head: no inference-time method closes the gap
+
+This is the comparison the central claim rests on. Roughly a dozen 2026 papers
+accelerate diffusion decoding by choosing *which* positions to reveal together.
+All of them take the trained marginals as given and only reorder commits. If the
+argument here is right, none can reach a method that changes the marginals — and
+giving them more compute should not help either.
+
+**12-digit addition**, exact match, baseline model decoded every way:
+
+| strategy | 1 pass | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| confidence | 76.7 | 76.4 | 76.4 | 76.3 | 76.2 |
+| entropy | 76.7 | 76.4 | 76.4 | 76.3 | 76.2 |
+| entropy-gated | 76.7 | 76.4 | 76.4 | 76.2 | 76.2 |
+| margin | 76.7 | 76.4 | 76.4 | 76.3 | 76.2 |
+| random | 76.7 | 77.2 | 76.9 | 76.8 | 76.4 |
+| **ours (training-time)** | **100.0** | 100.0 | 100.0 | 99.9 | 99.9 |
+
+**16-digit addition:**
+
+| strategy | 1 pass | best at ANY budget |
+|---|---|---|
+| every inference-time strategy | 25.0 | **25.0** |
+| **ours** | **75.0** | 75.0 |
+
+Two things stand out. Every strategy family lands on the *same* number, and
+**sixteen times the inference compute buys nothing** — at 12 digits it is
+marginally worse. You cannot reorder your way out of marginals that were never
+trained for the one-pass regime.
+
+The random-order row is the cleanest statement of it: choosing positions at
+random does as well as every principled ordering heuristic, because ordering is
+not what is broken.
+
 ## 4. The method
 
 ```
@@ -157,7 +192,20 @@ python src/train_add.py --mode full --digits 12 --lr 1e-4 --warmup 4000 --out ru
 python src/train_sig.py --lang turkish --mode full --out runs/tur
 ```
 
-## 8. Honest limitations
+## 8. Audit
+
+`src/audit.py` gates every claim and currently reports **0 failures**: arithmetic
+correctness at 4/8/12/16 digits, fixed-width answer regions (no length leakage),
+the prompt never masked, the metric unable to be gamed by constant output, probe
+ground truth valid while degenerate output scores zero, train/dev disjointness
+for inflection, at least two seeds behind every reported group, and all
+accuracies in range.
+
+It exists because two earlier projects produced confident wrong numbers — an
+answer-length leak and a learning-rate artifact — neither of which was visible in
+the accuracy tables.
+
+## 9. Honest limitations
 
 - Addition and inflection are probes, not applications; the claim is about the
   model class.
