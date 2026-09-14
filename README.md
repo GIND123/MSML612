@@ -293,17 +293,29 @@ The account predicts minimum depth growing with **log n**, not n — cleanly
 distinguishable from a ripple-carry account (linear) or an impossibility account
 (no depth suffices). Measured, over {2,3,4,6,8,12} layers × 2 seeds:
 
-| digits | minimum depth for >90% at one pass | ratio vs 4-digit |
-|---|---|---|
-| 4 | 2 | 1.0× |
-| 8 | 2 | 1.0× |
-| **12** | **3** | **1.5×** |
+| digits | 2 layers | 3 layers | minimum depth | ratio vs 4-digit |
+|---|---|---|---|---|
+| 4 | 100 | 100 | 2 | 1.00× |
+| 8 | 99 | 100 | 2 | 1.00× |
+| 12 | 48 | 100 | 3 | 1.50× |
+| **16** | **0** | **100** | **3** | **1.50×** |
 
-The discriminating quantity is the ratio, not the absolute count (a wide layer
-folds several scan levels into one). At 12 digits a ripple-carry account predicts
-**3.0×** and the prefix-scan account predicts **1.79×**; the measurement is
-**1.5×**. Ripple-carry is excluded. The 16-digit row is the clincher: ~4 layers
-supports the scan account, ~8 supports linear growth.
+The discriminating quantity is the ratio, not the absolute count, since a wide
+layer can fold several scan levels into one. At 16 digits:
+
+| account | predicted ratio | consistent with 1.50×? |
+|---|---|---|
+| **prefix scan (ours)** | 2.00× | **yes** — measured growth is if anything slower |
+| ripple carry | 4.00× | **no** |
+| not expressible at any depth | — | **no**, 3 layers suffice |
+
+**Ripple-carry is excluded.** Quadrupling the operand length from 4 to 16 digits
+costs **one extra layer**, not four times the depth.
+
+The 16-digit transition is also a clean threshold rather than a gradual ramp —
+**0% at two layers, 100% at three** — which is the signature of a computation
+that is depth-limited rather than capacity-limited or data-limited. The minimum
+depth is now determined at every length tested.
 
 ## 6. A confound that nearly produced the wrong paper
 
