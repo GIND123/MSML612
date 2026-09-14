@@ -198,6 +198,19 @@ fixes *compose* is actually tested, as a 2×2:
 Prediction: (c) < (a) and (d) < (b) on generative perplexity at equal compute,
 and the two gains are largely independent.
 
+**A second prediction, registered before the runs finish.** If fix (i) works by
+placing training mass on the ratios a decode actually visits, then matched-`K`
+training should show a **crossover**, not a uniform win: better than uniform-`t`
+near NFE ≈ K, and *worse* far from it. Training at K = 8 puts no mass at the
+ratios a 256-pass decode visits, so uniform-`t` should win at high NFE. A method
+that simply dominated everywhere would be evidence the mechanism is something
+other than the one claimed.
+
+By the same logic the `t = 1`-heavy variant should be the worst of the three on
+text at moderate NFE, because at `t = 1` an unconditional model can only learn
+character frequencies — there is no context to condition on. That variant is
+included to be refuted, not to win.
+
 Standard setup: text8, the conventional 90M/5M/5M character split, 27-symbol
 vocabulary, 256-character windows. Metrics:
 
