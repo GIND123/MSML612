@@ -59,7 +59,7 @@ def run(model, steps, strategy, tau=None):
             if not masked.any():
                 break
             logits = model(x)
-            probs = logits.softmax(-1)
+            probs = dfn.real_probs(logits, tok)
             conf, pred = probs.max(-1)
             if strategy == "random":
                 score = torch.rand_like(conf)

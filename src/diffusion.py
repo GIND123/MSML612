@@ -421,7 +421,7 @@ def cond_decode(model, x0, amask, tok, steps, device):
         if not masked.any():
             break
         logits = model(x)
-        conf, pred = logits.softmax(-1).max(-1)
+        conf, pred = real_probs(logits, tok).max(-1)
         conf = conf.masked_fill(~masked, -1e9)
         left = int(n_ans * (s - 1) / steps)
         for b in range(B):
@@ -469,3 +469,225 @@ def pmd_progressive(model, x0, amask, tok, progress, K_max=16, lam_max=1.0,
     if lam_now > 0:
         loss = loss + lam_now * sequential_distill_loss(model, x0, amask, tok)
     return loss, K_now, lam_now
+
+
+# ------------------------------------------------- the unified formulation ---
+# Two failure modes make parallel decoding lose accuracy, and they need opposite
+# fixes. Keeping them apart is the whole argument of this project.
+#
+#   (i)  THE MARGINALS ARE UNTRAINED AT HIGH MASK RATIO.
+#        A K-pass decode only ever evaluates the model at mask ratios
+#        {1, (K-1)/K, ..., 1/K}. Uniform-t training spends most of its capacity
+#        on nearly-complete states that high-parallelism decoding never visits.
+#        No inference-time reordering can repair a marginal that was never fit;
+#        this is fixable ONLY at training time, and `cond_mdlm_loss(t_dist=
+#        "matched", K=...)` is the fix. At K=1 the matched schedule degenerates
+#        to t=1, which is exactly `sequential_distill_loss` - the addition
+#        experiments are the K=1 special case of one principle.
+#
+#   (ii) THE COMMITTED POSITIONS CARRY REAL MUTUAL INFORMATION.
+#        Parallel decoding samples the PRODUCT of marginals; the truth is the
+#        joint. The discarded dependence is the total correlation of the
+#        committed set S,
+#              TC(S) = sum_i H(x_i | c)  -  H(S | c)  <=  sum_i H(x_i | c),
+#        so the summed conditional entropy of what we commit is an upper bound
+#        on the error we incur by committing it. If every committed conditional
+#        is a point mass the bound is zero and independent sampling reproduces
+#        the joint exactly. No training objective can remove this term without
+#        abandoning the data distribution, so it is fixable ONLY at inference,
+#        by committing less. `entropy_budget_decode` is that fix.
+#
+# Prior work applies inference-time fixes to both, which is why it flatlines on
+# addition: there, every conditional is a point mass, (ii) is identically zero,
+# and all of the loss is (i). The claim here is that the two compose - and text,
+# which contains deterministic and high-entropy positions in the same sequence,
+# is where that composition is tested.
+
+@torch.no_grad()
+def _entropy(logits):
+    p = logits.softmax(-1)
+    return -(p * p.clamp_min(1e-9).log()).sum(-1)
+
+
+@torch.no_grad()
+def _commit(x, take, samp):
+    return torch.where(take, samp, x)
+
+
+def real_probs(logits, tok):
+    """Distribution over REAL tokens only.
+
+    The absorbing state is an input symbol, never an output: in the SUBS
+    parameterisation the denoiser places zero probability on [MASK]. Sampling
+    from the raw softmax instead lets a position be "committed" as [MASK], so it
+    stays masked, decoding silently stalls, and the adaptive rules stop being
+    monotone in their budget. The audit caught exactly this.
+    """
+    logits = logits.clone()
+    logits[..., tok.mask] = -float("inf")
+    if getattr(tok, "pad", tok.mask) != tok.mask:
+        logits[..., tok.pad] = -float("inf")
+    return logits.softmax(-1)
+
+
+@torch.no_grad()
+def entropy_budget_decode(model, x, tok, device, budget=0.5, max_steps=256,
+                          temperature=1.0, fillable=None):
+    """FIX (ii): commit a set whose summed conditional entropy stays under `budget`.
+
+    At each pass, rank the still-masked positions by conditional entropy and
+    commit the longest low-entropy prefix whose cumulative entropy is within
+    `budget` nats. By the bound above, `budget` directly caps the dependence
+    thrown away at that pass, so it is an interpretable dial rather than a tuned
+    heuristic: budget -> 0 recovers near-sequential decoding, budget -> infinity
+    recovers one-shot parallel decoding, and the curve between them is the
+    quality/compute trade-off.
+
+    Returns (x, nfe); nfe is data-dependent, which is the point of an adaptive
+    rule - cheap sequences finish in fewer passes.
+    """
+    x = x.clone().to(device)
+    can = (x == tok.mask) if fillable is None else fillable.to(device)
+    B, L = x.shape
+    ar = torch.arange(L, device=device)
+    nfe = 0
+    for _ in range(max_steps):
+        masked = (x == tok.mask) & can
+        has = masked.any(1)
+        if not has.any():
+            break
+        logits = model(x)
+        nfe += 1
+        if temperature != 1.0:
+            logits = logits / temperature
+        probs = real_probs(logits, tok)
+        H = -(probs * probs.clamp_min(1e-9).log()).sum(-1)
+        samp = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(B, L)
+
+        # sort masked positions by entropy; unmasked go last via +inf
+        Hm = H.masked_fill(~masked, float("inf"))
+        order = Hm.argsort(dim=1)
+        cum = Hm.gather(1, order).cumsum(1)
+        k = (cum <= budget).sum(1)
+        k = torch.where(has, k.clamp_min(1), torch.zeros_like(k))  # always progress
+        sel = ar[None, :] < k[:, None]
+        take = torch.zeros_like(masked).scatter_(1, order, sel) & masked
+        x = _commit(x, take, samp)
+    return x, nfe
+
+
+@torch.no_grad()
+def confidence_threshold_decode(model, x, tok, device, tau=0.9, max_steps=256,
+                                temperature=1.0, fillable=None):
+    """The published inference-time competitor (confidence-threshold family).
+
+    Commit every masked position whose top-1 probability exceeds `tau`. This is
+    the rule the 2026 parallel-decoding accelerators use; it is included so the
+    comparison is against the actual algorithm rather than a top-k heuristic. It
+    is a sensible rule and on text it works - the argument here is not that it
+    is wrong, but that it addresses failure mode (ii) only and therefore cannot
+    recover accuracy lost to (i).
+    """
+    x = x.clone().to(device)
+    can = (x == tok.mask) if fillable is None else fillable.to(device)
+    B, L = x.shape
+    nfe = 0
+    for _ in range(max_steps):
+        masked = (x == tok.mask) & can
+        has = masked.any(1)
+        if not has.any():
+            break
+        logits = model(x)
+        nfe += 1
+        if temperature != 1.0:
+            logits = logits / temperature
+        probs = real_probs(logits, tok)
+        conf = probs.max(-1).values
+        samp = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(B, L)
+
+        take = (conf >= tau) & masked
+        # a row that clears nothing still has to advance, or decoding stalls
+        stuck = has & ~take.any(1)
+        if stuck.any():
+            best = conf.masked_fill(~masked, -float("inf")).argmax(1)
+            take[stuck, best[stuck]] = True
+        x = _commit(x, take, samp)
+    return x, nfe
+
+
+@torch.no_grad()
+def fixed_k_decode(model, x, tok, device, steps, temperature=1.0, fillable=None):
+    """Plain K-pass decoding: reveal an equal share of positions per pass,
+    highest-confidence first. The non-adaptive reference point, and the setting
+    in which the addition results are reported."""
+    x = x.clone().to(device)
+    can = (x == tok.mask) if fillable is None else fillable.to(device)
+    B, L = x.shape
+    total = int(can.sum(1).max())
+    ar = torch.arange(L, device=device)
+    nfe = 0
+    for s in range(steps, 0, -1):
+        masked = (x == tok.mask) & can
+        has = masked.any(1)
+        if not has.any():
+            break
+        logits = model(x)
+        nfe += 1
+        if temperature != 1.0:
+            logits = logits / temperature
+        probs = real_probs(logits, tok)
+        conf = probs.max(-1).values.masked_fill(~masked, -float("inf"))
+        samp = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(B, L)
+
+        left = int(total * (s - 1) / steps)
+        k = (masked.sum(1) - left).clamp_min(0)
+        k = torch.where(has, k.clamp_min(1), torch.zeros_like(k))
+        order = conf.argsort(dim=1, descending=True)
+        sel = ar[None, :] < k[:, None]
+        take = torch.zeros_like(masked).scatter_(1, order, sel) & masked
+        x = _commit(x, take, samp)
+    return x, nfe
+
+
+def uncond_mdlm_loss(model, x0, tok, t_dist="uniform", K=None):
+    """Unconditional masked-diffusion loss with the schedule as a free choice.
+
+    This is `cond_mdlm_loss` with every position maskable, written separately
+    because text has no prompt/answer split. `t_dist="matched"` is FIX (i):
+    draw t from the ratios a K-pass decode actually visits instead of from
+    U(0,1). The 1/t weighting of the ELBO is kept so that `t_dist="uniform"`
+    remains the standard MDLM objective and the baseline is exactly the
+    published one.
+    """
+    B, L = x0.shape
+    dev = x0.device
+    if t_dist == "matched" and K:
+        t = torch.randint(1, K + 1, (B,), device=dev).float() / K
+    else:
+        t = torch.rand(B, device=dev).clamp_min(1.0 / L)
+
+    m = torch.rand(B, L, device=dev) < t[:, None]
+    m[torch.arange(B, device=dev), torch.randint(0, L, (B,), device=dev)] = True
+    xt = torch.where(m, torch.full_like(x0, tok.mask), x0)
+    logits = model(xt)
+    ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), x0.reshape(-1),
+                         reduction="none").view(B, L)
+    return ((1.0 / t) * (ce * m).sum(1) / L).mean()
+
+
+def text_loss(model, x0, tok, mode="mdlm", K=8, lam=1.0):
+    """Training objectives for text8.
+
+      mdlm     standard uniform-t MDLM (the published baseline)
+      matched  FIX (i): schedule matched to a K-pass decode
+      full     matched schedule plus an explicit high-ratio term
+
+    `full` adds one extra evaluation at t drawn from the top of the schedule,
+    which is where a low-NFE decode spends its first and most damaging commits.
+    """
+    if mode == "mdlm":
+        return uncond_mdlm_loss(model, x0, tok, "uniform")
+    if mode == "matched":
+        return uncond_mdlm_loss(model, x0, tok, "matched", K)
+    base = uncond_mdlm_loss(model, x0, tok, "matched", K)
+    return base + lam * uncond_mdlm_loss(model, x0, tok, "matched", 2)
