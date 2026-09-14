@@ -100,6 +100,7 @@ Cost of (i): one embedding lookup, no extra forward pass. Cost of (ii): none.
 | **Unique, shallow deps** | morphological inflection | small | small | mostly already works |
 | **Unique, deep deps** | *n*-digit addition | **dominant** | zero | fails → **the method fixes it** |
 | **Mixed** | natural text | present | present | **where the two must compose** |
+| **Exactly measurable** | structured graphs | present | **dominant** | **where the bound is verifiable** |
 
 ---
 
@@ -263,6 +264,74 @@ vocabulary, 256-character windows. Metrics:
   perplexity alone is trivially gamed by degenerate repetition.
 
 Against the published **confidence-threshold** rule, not a top-*k* stand-in.
+
+## 3b. Graphs — where the bound stops being an assumption *(partial)*
+
+The weakness of everything above is that the central quantity is never measured.
+On addition `TC = 0` by construction; on text `H(S|c)` is not computable. So the
+entropy budget rests on a bound the experiments never check.
+
+Structured graphs close that. A graph on *n* nodes is a binary sequence of
+`n(n−1)/2` edge indicators — the same machinery, unchanged — but for *n* ≤ 7 the
+**entire family enumerates**, making every quantity exact: true marginals,
+`H(S) = log₂|F|`, `TC`, and the one-pass ceiling
+
+```
+V* = Σ_{g valid} ∏ᵢ pᵢ(gᵢ)      (what perfect marginals achieve in one pass)
+```
+
+**Proposition.** For `P` uniform on a family `F`, `V* ≥ 2^(−TC)`, with equality
+iff `∏ᵢ pᵢ` is constant on `F`. *Every bit of total correlation among jointly
+committed variables at most halves the one-pass success probability.* Proof and
+verification in [`THEORY.md`](THEORY.md) §5.1 — the inequality holds across all
+nine family/size combinations, and equality holds **to five decimal places** on
+exactly the fixed-edge-count families, failing precisely where edge counts vary,
+as the Jensen step requires.
+
+### Both failure modes, separated by measurement
+
+This is what no earlier task could do. Perfect matchings on 6 nodes,
+`TC = 6.92 bits`, `V* = 0.825%`:
+
+| | one pass (95% CI) | contains V*? | K = 8 |
+|---|---|---|---|
+| MDLM baseline | 0.769% [0.602, 0.983] | **yes** | 76.7% |
+| any-budget | 0.928% [0.677, 1.271] | **yes** | **94.7%** |
+
+**At one pass both sit at the information-theoretic limit**, so the residual
+99.2% failure is provably mode (ii) and no training objective can recover it.
+**At K = 8 the gap is 18 points**, so mode (i) is real at intermediate budgets
+and budget conditioning is what addresses it. Same task, same models, both modes
+quantified separately.
+
+Coverage confirms this is not degeneracy: 100% of the 15-member family is
+recovered at K = 8 and under the entropy budget. (Reporting "uniqueness" as
+unique/valid would have shown 0.4% and read as collapse — with `|F| = 15`,
+coverage is the meaningful metric.)
+
+The entropy budget also dominates fixed-K under both training modes, reaching
+100% validity at 11 passes where fixed-K needs 15.
+
+**Status: 3 of 16 runs.** The remaining families span `TC` from 0.11 to 8.44
+bits, which is where the dose-response claim — larger `TC`, lower ceiling, more
+of the loss unfixable — is actually tested. One non-monotonicity in the baseline
+(83.6% at K=4 falling to 76.7% at K=8) is single-seed and not yet trustworthy.
+
+### Phase 2: QM9
+
+The synthetic families give an exact ceiling on an artificial task. QM9 gives a
+real benchmark whose metric is unambiguous — RDKit sanitisation enforces valency
+at every atom at once, a genuine joint constraint, with no evaluator model in
+the loop. A molecule is 9 node slots plus 36 edge slots = 45 tokens, so training
+from scratch is cheap and the comparison isolates schedule and decoding rule
+rather than scale. The axis is the one the graph-diffusion literature competes
+on: **validity retained as denoising steps fall.**
+
+The encoding is verified lossless first — storing aromatic bonds loses per-atom
+aromaticity flags and put round-trip validity on *real* molecules at 92.65%,
+which would have measured generated samples against a target the representation
+could not reach. Kekulised and charge-filtered, round-trip is 100.00% while
+keeping 99.1% of the dataset.
 
 ## 4. The limit that cannot be trained away
 
