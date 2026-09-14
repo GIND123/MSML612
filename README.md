@@ -71,16 +71,45 @@ t ~ {1, (K−1)/K, …, 1/K}
 loss = CE( model(x_t, budget=K), x₀ )
 ```
 
-One network then serves every budget instead of a family of networks each good
-at a single point. It costs **one embedding lookup and no extra forward pass**,
-which makes it cheaper than the fixed-`K` method it replaces — that one needed
-two passes per step.
+It costs **one embedding lookup and no extra forward pass**, so it is cheaper
+than the fixed-`K` method it replaces.
 
-The ablation `anybudget_nc` samples `K` identically but withholds the
-conditioning, which separates *mixing* budgets from *knowing* the budget. Both
-arms are running; the prediction is that mixing alone improves the sequential
-end while giving back the one-pass end, because one set of weights is then
-serving contradictory targets, and that conditioning is what recovers both.
+### It is a trade, not a free win — and on addition the trade is catastrophic
+
+Measured on 20-digit addition, against the fixed-`K` (`K = 1`) method:
+
+| training | 1 pass | 2 | 4 | 8 | 16 | 21 (sequential) |
+|---|---|---|---|---|---|---|
+| MDLM baseline | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | – |
+| **fixed-K (K=1)** | **99.9** | 99.3 | 95.6 | 87.5 | 85.8 | – |
+| any-budget, no conditioning | 0.4 | 0.5 | 0.5 | 0.6 | 0.5 | 0.5 |
+| **any-budget** | **0.0** | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+
+Any-budget does not flatten the crossover here; it **destroys the capability**,
+scoring zero at every budget including a fully sequential decode — it never
+learned the task at all. Conditioning is even slightly *worse* than not
+conditioning, so the embedding does not pay for itself on this task.
+
+The mechanism is arithmetic, and measured rather than inferred. A one-pass decode
+begins at `t = 1`, and the share of training landing there is
+
+```
+fixed-K (K=1):   P(t = 1) = 1.000
+any-budget:      P(t = 1) = (1/9) Σ_K 1/K = 0.222
+```
+
+a **4.5× dilution** of the only signal that matters here. 20-digit addition sits
+exactly at the learnability edge — uniform-`t` training supplies almost no mass
+at `t = 1` and scores 0%, `t = 1` alone scores 99.9% — so cutting that signal
+4.5× drops it back below threshold.
+
+**The budget distribution is therefore a hyperparameter that must match
+deployment, not a universal default.** Where only one budget is ever used, match
+it; spreading is pure loss. Where many are used — the graph families in §3b,
+where any-budget sits at the ceiling at one pass *and* leads by 9.7 points at
+K = 8 — spreading is what buys the frontier. Reweighting `K` recovers the
+`t = 1` share (`1/K` weighting gives 0.667, steeper gives 0.858), which is what
+the principle prescribes once the deployment budget is known.
 
 **Fix (ii) — entropy-budgeted commitment.** At each pass, rank still-masked
 positions by conditional entropy and commit the longest low-entropy prefix whose
@@ -469,6 +498,10 @@ python src/audit.py
   trained for (99.8% at one pass, 85.7% at twenty). This is predicted by the
   account but it is a real limitation: the training `K` is a commitment to a
   decoding budget, not a free win.
+- The any-budget fix for that commitment **fails outright on addition** (0.0% at
+  every budget, against 99.9% for fixed-`K`), because spreading the schedule
+  dilutes `t = 1` training 4.5× on a task that sits at the learnability edge. It
+  helps on graphs and is untested on text. Uniform-`K` is not a safe default.
 - The answer region reveals whether the sum carries out (its width is *d* or
   *d*+1). Both arms receive this equally, so comparisons are unaffected, but it
   is one bit of leakage.
