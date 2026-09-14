@@ -44,16 +44,25 @@ at fully sequential decoding. Measured, not asserted.
 Morphological inflection (SIGMORPHON 2017, 52 languages) has unique answers, but
 forms are ~10 characters with shallow local dependencies.
 
-| language | 1 pass | 32 passes | gap |
-|---|---|---|---|
-| English | **95.3** | 95.2 | none |
-| German | 77.2 | 78.3 | +1.1 |
-| Turkish | 76.4 | 81.8 | +5.4 |
+The plain baseline already decodes English in one pass at 95.0%, competitive
+with published transformer baselines. But the **penalty for going to one pass**
+is what the method removes, and that holds across every language tested:
 
-The **plain baseline already decodes in one pass**, at accuracy competitive with
-published transformer baselines (~95% on English). Reporting this matters: a
-method evaluated only here would look like it does nothing, and a method that
-claimed gains here would be suspect.
+| language | baseline 1→32 gap | **ours** | ours @1 pass |
+|---|---|---|---|
+| Finnish | **+8.0** | +4.9 | 50.9 |
+| Turkish | +4.7 | **+1.0** | 80.2 |
+| German | +3.9 | **+0.4** | 78.9 |
+| Russian | +2.6 | – | – |
+| Spanish | +0.1 | −0.2 | 84.9 |
+| English | +0.2 | −0.4 | 95.5 |
+
+The baseline loses four to eight points when forced to one pass; the method
+loses roughly none. Breadth here is across typologically diverse languages
+rather than across seeds of a single configuration.
+
+Reporting English matters: it shows where the method has nothing to add, which
+is what makes the gains elsewhere credible.
 
 ## 3. The regime the method targets
 
@@ -64,9 +73,15 @@ by the operands, yet digit *i* needs the carry out of digit *i−1*.
 
 | digits | MDLM baseline | full method | seeds >90% |
 |---|---|---|---|
-| 8 | 100.0 | 100.0 | 4/4 → 4/4 |
+| 8 | 100.0 | 100.0 | 4/4 → 4/4 (saturated) |
 | **12** | **76.7** | **100.0** | 3/4 → **4/4** |
-| **16** | **25.0** | *(running)* | 1/4 → — |
+| **16** | **25.0** | **75.0** | 1/4 → **3/4** |
+| 24, 32 | 0.0 | 0.0 | not learned at this scale |
+
+**Three times the accuracy at sixteen digits.** Beyond 24 digits neither method
+learns the task even at sequential decoding, so nothing there is a statement
+about parallelism; larger runs are testing whether that wall is capacity or
+optimisation.
 
 The gap opens exactly where the carry chain outgrows what one forward pass can
 compute, and the method closes it — **sixteen inference passes collapse to one,
