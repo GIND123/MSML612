@@ -1,7 +1,23 @@
-# Why one-pass parallel decoding should be possible — and why training misses it
+# Why parallel decoding fails, in two separate ways
 
-The empirical claim in this project is that a masked diffusion model can commit an
-entire chained answer in a **single forward pass**. That sounds like it should be
+Parallel decoding in masked diffusion loses accuracy for two reasons that are
+usually conflated. They have different mathematics and **opposite** remedies, and
+keeping them apart is what this project is about.
+
+- **Mode (i), a computational/optimisation problem.** The marginals the decoder
+  reads were never fit at the mask ratios a high-parallelism decode visits. This
+  is fixable **only at training time**, and §§1–4 below are its analysis.
+- **Mode (ii), an information-theoretic problem.** Committing several positions
+  at once samples the product of marginals when the truth is the joint. This is
+  fixable **only at inference**, by committing less, and §5 is its analysis.
+
+Section 6 states what each predicts, which is how they are told apart
+empirically.
+
+---
+
+The claim behind mode (i) is that a masked diffusion model can commit an entire
+chained answer in a **single forward pass**. That sounds like it should be
 impossible: digit *i* of a sum needs the carry out of digit *i−1*, which needs the
 carry before it, and so on. The reason it is *not* impossible is a known result in
 circuit complexity, and it gives the method a falsifiable prediction rather than
@@ -73,24 +89,87 @@ on a trained checkpoint.
 ## 4. The prediction that makes this falsifiable
 
 If the account is right, the **minimum depth for successful one-pass decoding
-grows with log n, not with n**:
+grows like log n, not like n**.
 
-| digits n | predicted minimum depth |
+The falsifiable content is the **growth rate, not the absolute layer counts**.
+A depth-*d* transformer of sufficient width can fold several levels of the scan
+into one layer, so measured minima may sit *below* log₂(n) — and in our sweep
+they do: 8-digit addition is solved at 2 layers, not the 3 that a
+one-level-per-layer reading would predict. That is consistent with a log-depth
+(or better) circuit and is **not** evidence against the account. What would
+refute it is linear growth.
+
+The three accounts separate cleanly on the ratio between the smallest and
+largest length tested:
+
+| account | depth(16 digits) ÷ depth(4 digits) |
 |---|---|
-| 4 | ~2 |
-| 8 | ~3 |
-| 16 | ~4 |
-| 32 | ~5 |
+| **prefix scan (ours)** | **~2×**, since log₂16 / log₂4 = 2 |
+| ripple carry | ~4×, linear in n |
+| not expressible at any depth | no depth succeeds |
 
-A ripple-carry account predicts depth linear in n. A "transformers cannot do this"
-account predicts no depth suffices. These are cleanly distinguishable by measuring
-the minimum depth at which one-pass accuracy crosses a threshold, and it is a
-prediction about the *method*, not merely a benchmark score.
+So the sweep over {2,3,4,6,8,12} layers × {4,8,12,16} digits discriminates: if 16
+digits needs ≲4 layers the scan account survives; if it needs ≳8 the ripple-carry
+account does. This is a prediction about the *method*, not a benchmark score.
 
-The same framing says where the method must **fail**, which is equally important:
-when the answer is not unique, the obstacle is information-theoretic rather than
-computational, no depth or curriculum helps, and our 66-run entropy sweep confirmed
-it.
+## 5. Mode (ii): the part no training can fix
+
+Everything above concerns whether a marginal was *learned*. Mode (ii) concerns
+what happens when several correct marginals are committed **simultaneously**.
+
+Parallel decoding samples each committed position independently, i.e. from the
+product ∏ᵢ p(xᵢ | c). The truth is the joint p(S | c). The gap between them is the
+**total correlation** (multi-information) of the committed set:
+
+```
+TC(S)  =  D_KL( p(S|c)  ||  ∏ᵢ p(xᵢ|c) )  =  Σᵢ H(xᵢ|c) − H(S|c)   ≥  0
+```
+
+That first equality is an identity, not an approximation: the KL divergence from
+a joint to the product of its own marginals *is* the total correlation. Parallel
+decoding draws from the right-hand product while the data follow the left-hand
+joint, so TC(S) is exactly the quantity a parallel commit discards.
+
+Since entropies of discrete variables are non-negative, H(S | c) ≥ 0 and so
+
+```
+TC(S)  ≤  Σᵢ H(xᵢ | c).
+```
+
+**The summed conditional entropy of what you commit upper-bounds the dependence
+you throw away by committing it.** Two consequences follow directly:
+
+1. **If every committed conditional is a point mass, the bound is zero.** Then
+   independent sampling reproduces the joint *exactly*, and there is no mode (ii)
+   at all. Addition is this case — which is why no inference-time reordering
+   helps there, and why the entire gap must be mode (i).
+2. **If the conditionals carry entropy, no training objective removes the term.**
+   Fitting the marginals better does not reduce TC(S); the dependence is a
+   property of the data distribution. The only lever is to commit a smaller or
+   lower-entropy set. Driving the marginals to point masses *would* remove it,
+   but that means abandoning the data distribution — which is exactly what our
+   66-run entropy-penalty sweep found: weak settings changed nothing, strong
+   settings destroyed the model.
+
+This bound is what makes the entropy budget principled rather than heuristic.
+Committing while Σᵢ H(xᵢ | c) ≤ B caps the discarded dependence at B nats per
+pass, so B is a dial on a quantity with units, not a tuned threshold.
+
+## 6. How the two modes are told apart
+
+They make opposite predictions, which is what lets the experiments separate them:
+
+| | mode (i) present | mode (ii) present |
+|---|---|---|
+| more inference passes help? | **no** — marginals are wrong at every budget | **yes** — smaller commits, less discarded TC |
+| better commit *ordering* helps? | no | yes |
+| more/better training helps? | **yes** | no |
+| entropy of the conditionals | irrelevant | **it is the whole story** |
+
+Addition is pure mode (i): unique answers, so TC = 0 by construction. The
+free-choice probes are pure mode (ii): maximum-entropy conditionals, nothing to
+learn. Natural text has both at once, which is why it is the test of whether the
+two fixes compose rather than interfere.
 
 ## References
 
@@ -99,3 +178,5 @@ it.
 - Li et al. *Chain of Thought Empowers Transformers to Solve Inherently Serial Problems.*
 - Sahoo et al. *Simple and Effective Masked Diffusion Language Models.* NeurIPS 2024.
 - Salimans & Ho. *Progressive Distillation for Fast Sampling of Diffusion Models.*
+- Watanabe. *Information theoretical analysis of multivariate correlation.* (total correlation)
+- Cover & Thomas. *Elements of Information Theory*, ch. 2 (entropy bounds used in §5).
