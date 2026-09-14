@@ -172,6 +172,102 @@ except FileNotFoundError:
 except Exception as e:
     check("text8 loader", False, f"{type(e).__name__}: {e}")
 
+print("\n=== 9. graph families: enumeration matches known combinatorics ===")
+# These families have closed-form counts, so the enumerator can be checked
+# against mathematics rather than against itself. If enumeration is wrong then
+# every marginal, every entropy and V* are wrong, and the central proposition
+# would be "verified" against a fiction.
+try:
+    from graphs import enumerate_family, exact_stats, sample, is_valid, n_edges
+
+    # Cayley: labelled spanning trees on n nodes = n^(n-2)
+    for n in (5, 6, 7):
+        got = len(enumerate_family("tree", n))
+        check(f"spanning trees on {n} nodes = {n}^{{{n}-2}}", got == n ** (n - 2),
+              f"{got} vs {n ** (n - 2)}")
+    # perfect matchings on 2m nodes = (2m-1)!!
+    for n, want in ((4, 3), (6, 15)):
+        got = len(enumerate_family("matching", n))
+        check(f"perfect matchings on {n} nodes = {want}", got == want, f"{got}")
+    # 2-regular on 6 labelled vertices: one 6-cycle (5!/2=60) + two 3-cycles (10)
+    got = len(enumerate_family("2regular", 6))
+    check("2-regular graphs on 6 nodes = 70", got == 70, f"{got}")
+
+    # the proposition itself, on every family
+    bad = []
+    for n in (6, 7):
+        for fam in ("matching", "2regular", "tree", "trianglefree", "bipartite"):
+            try:
+                st = exact_stats(fam, n)
+            except ValueError:
+                continue
+            V, tc = st["one_pass_ceiling"], st["total_correlation_bits"]
+            if V < 2 ** (-tc) - 1e-9:
+                bad.append((fam, n, V, 2 ** (-tc)))
+            if tc < -1e-9:
+                bad.append((fam, n, "negative TC", tc))
+    check("V* >= 2^-TC on every family (the proposition)", not bad, str(bad[:2]))
+
+    # sampled graphs must actually belong to the family they were drawn from
+    for fam in ("matching", "tree", "bipartite"):
+        X = sample(fam, 6, 200, seed=3)
+        check(f"{fam}: sampled graphs are all in the family",
+              bool(is_valid(X, fam, 6).all()))
+        check(f"{fam}: sample width = n_edges", X.shape[1] == n_edges(6))
+except Exception as e:
+    check("graph families", False, f"{type(e).__name__}: {e}")
+
+print("\n=== 10. molecules: the encoding is lossless ===")
+# Storing aromatic bond types loses per-ATOM aromaticity, so real molecules
+# failed to rebuild and generated-sample validity would have been scored against
+# a target the representation could not reach. Round-trip on REAL data is the
+# check that catches it.
+try:
+    from qm9 import MolTokenizer, SEQ_LEN, MAX_ATOMS, load_qm9, validity
+    mt = MolTokenizer()
+    am = mt.allowed_mask()
+    check("node slots forbid bond symbols",
+          not am[:MAX_ATOMS][:, mt.bond_ids].any())
+    check("edge slots forbid atom symbols",
+          not am[MAX_ATOMS:][:, mt.atom_ids].any())
+    check("no position may emit [MASK]", not am[:, mt.mask].any())
+
+    root = os.environ.get("QM9ROOT", "data/qm9")
+    Xm, mtok, smis = load_qm9(root, limit=1500)
+    v, _ = validity(Xm, mtok)
+    check("round-trip validity on REAL molecules is ~100%", v > 0.999,
+          f"{v*100:.2f}%")
+    check("sequence width = 9 atoms + 36 bonds", Xm.shape[1] == SEQ_LEN,
+          f"{Xm.shape[1]} vs {SEQ_LEN}")
+except FileNotFoundError:
+    print("  [skip] qm9.csv not downloaded here")
+except Exception as e:
+    check("molecule encoding", False, f"{type(e).__name__}: {e}")
+
+print("\n=== 11. budget conditioning ===")
+try:
+    from data import build_addition as _ba
+    _, _, tk = _ba(2, 4, 16, seed=0, exact=True)
+    m0 = Transformer(len(tk), 32, 2, 2, "rope", causal=False, max_len=24)
+    m1 = Transformer(len(tk), 32, 2, 2, "rope", causal=False, max_len=24,
+                     budget_bins=8)
+    check("budget_bins=0 adds no parameters",
+          m0.n_params() == m1.n_params() - 8 * 32,
+          f"{m0.n_params()} vs {m1.n_params()}")
+    # a K=1 decode only ever sees the fully-masked state, so t must be exactly 1
+    t1 = dfn._t_for_budget(torch.ones(256))
+    check("K=1 always draws t=1", bool((t1 == 1.0).all()), f"max dev {float((t1-1).abs().max()):.2e}")
+    t4 = dfn._t_for_budget(torch.full((4096,), 4.0))
+    vals = sorted({round(float(v), 4) for v in t4})
+    check("K=4 draws only {0.25,0.5,0.75,1.0}",
+          vals == [0.25, 0.5, 0.75, 1.0], str(vals))
+    check("t is never zero", bool((dfn._t_for_budget(torch.full((4096,), 64.0)) > 0).all()))
+    b = Transformer.budget_bin(torch.tensor([1., 2., 4., 8., 1024.]), 8, "cpu")
+    check("budget bins are log2 and clamped", b.tolist() == [0, 1, 2, 3, 7],
+          str(b.tolist()))
+except Exception as e:
+    check("budget conditioning", False, f"{type(e).__name__}: {e}")
+
 print(f"\n=== AUDIT: {len(FAIL)} failure(s) ===")
 for f in FAIL:
     print("  !", f)
