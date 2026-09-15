@@ -269,6 +269,21 @@ languages, 2 seeds each:
 | Navajo | 28.0 | 26.9 | +8.0 | **+4.5** | 44% |
 | **mean** | **66.7** | **67.7** | **+4.1** | **+1.7** | **59%** |
 
+### Which component carries it (48 runs: 6 languages × 4 modes × 2 seeds)
+
+| mode | mean @1 pass | gap 1→32 | share of the gap removed |
+|---|---|---|---|
+| MDLM baseline | 66.7 | +4.1 | — |
+| schedule matching alone | 67.7 | +3.4 | 17% |
+| **`t = 1` term alone** | 67.5 | **+2.1** | **49%** |
+| **both** | 67.7 | **+1.7** | **59%** |
+
+**The `t = 1` term is the active ingredient.** On its own it removes half the
+parallelism penalty — nearly three times what reshaping the rest of the schedule
+achieves — and the two components are roughly additive. That is precisely what
+the account predicts: what matters is training the *fully-masked state the
+decoder starts from*, not redistributing mass across the schedule generally.
+
 The honest reading: **the method removes 59% of the parallelism penalty at no
 cost to one-pass accuracy (66.7 → 67.7), but it does not raise the ceiling** —
 at 32 passes it is 1.4 points *below* the baseline (69.4 vs 70.8). Concentrating
