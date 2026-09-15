@@ -359,6 +359,63 @@ if os.path.exists(sc):
         md.append(f"| {k[0]} | {k[1]} | {one:.1f} | {seq:.1f} | {read} |")
     md.append("")
 
+
+# ---- Table 10: graphs, where the ceiling is known exactly -------------------
+gr1 = [r for r in R if r["name"].startswith("gr1-")]
+if gr1:
+    md.append("## Table 10 — Structured graphs: measured against an exact ceiling\n")
+    md.append("V* is the one-pass validity achievable from the TRUE marginals, so it "
+              "bounds any model that reproduces the data distribution. Where the "
+              "interval contains V* the residual failure is information-theoretic "
+              "and untrainable; where it falls short, the shortfall is trainable.\n")
+    md.append("| family | TC (bits) | V* | achieved @1 pass | reading |")
+    md.append("|---|---|---|---|---|")
+    by = {}
+    for r in gr1:
+        by.setdefault(r["args"]["family"], []).append(r)
+    for fam in sorted(by, key=lambda f: -by[f][0]["exact"]["total_correlation_bits"]):
+        rs = [r for r in by[fam] if r["args"]["mode"] == "mdlm"]
+        if not rs:
+            continue
+        ex = rs[0]["exact"]
+        v = np.mean([r["decode"]["fixedK_1"]["validity"] for r in rs]) * 100
+        V = ex["one_pass_ceiling"] * 100
+        read = "at the ceiling — untrainable" if v > 0.8 * V else "below ceiling — see Table 11"
+        md.append(f"| {fam} | {ex['total_correlation_bits']:.2f} | {V:.2f}% | "
+                  f"{v:.2f}% | {read} |")
+    md.append("")
+
+# ---- Table 11: the expressivity result -------------------------------------
+gr2 = [r for r in R if r["name"].startswith("gr2-")]
+if gr2:
+    md.append("## Table 11 — One-pass decoding needs ABSOLUTE position information\n")
+    md.append("At t = 1 every input token is [MASK], so the sequence is constant and a "
+              "relative encoding gives every position the same output. Position-dependent "
+              "marginals are then inexpressible at any training budget. Matching is the "
+              "control: its marginals are identical at every slot, so absolute "
+              "information should buy nothing there.\n")
+    md.append("| family | marginals | encoding | @1 pass | % of V* |")
+    md.append("|---|---|---|---|---|")
+    by = {}
+    for r in gr2:
+        by.setdefault((r["args"]["family"], r["args"]["pe"]), []).append(r)
+    eff = {}
+    for fam, marg in (("bipartite", "**vary**"), ("matching", "constant")):
+        for pe in ("rope", "ape", "sin"):
+            rs = by.get((fam, pe))
+            if not rs:
+                continue
+            v = np.mean([r["decode"]["fixedK_1"]["validity"] for r in rs])
+            V = rs[0]["exact"]["one_pass_ceiling"]
+            eff[(fam, pe)] = v
+            md.append(f"| {fam} | {marg} | {pe} | {v*100:.2f}% | {v/V*100:.1f}% |")
+    md.append("")
+    for fam in ("bipartite", "matching"):
+        if (fam, "rope") in eff and (fam, "ape") in eff:
+            delta = (eff[(fam, "ape")] - eff[(fam, "rope")]) * 100
+            md.append(f"- absolute − relative on **{fam}**: **{delta:+.3f}** points")
+    md.append("")
+
 open(f"{OUT}/summary.md", "w").write("\n".join(md) + "\n")
 print("\n".join(md))
 print(f"\nwrote figures + summary to {OUT}")
