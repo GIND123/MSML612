@@ -45,6 +45,8 @@ def get_args():
     p.add_argument("--warmup", type=int, default=2000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--eval_bs", type=int, default=200)
+    p.add_argument("--ckpt_every", type=int, default=4000,
+                   help="steps between checkpoints; 0 disables")
     p.add_argument("--out", default="runs/sud")
     return p.parse_args()
 
@@ -74,9 +76,37 @@ sched = torch.optim.lr_scheduler.LambdaLR(
     opt, lambda s: min(1.0, (s + 1) / a.warmup) *
                    0.5 * (1 + math.cos(math.pi * min(1.0, s / a.steps))))
 
+# ---- checkpoint / resume ---------------------------------------------------
+# The class allocation bills an H100 at 144/min against 9/min for a 5GB MIG
+# slice, so long runs belong on the cheap partition - which has shorter time
+# limits. Resuming from a checkpoint is what makes a long run survive being
+# split across several short jobs, and it costs no extra GPU-time: the
+# allocation charges GPU-seconds consumed, not jobs submitted.
+CKPT = os.path.join(a.out, "ckpt.pt")
+start_step = 0
+if os.path.exists(CKPT):
+    st = torch.load(CKPT, map_location=dev)
+    model.load_state_dict(st["model"])
+    opt.load_state_dict(st["opt"])
+    sched.load_state_dict(st["sched"])
+    start_step = st["step"]
+    torch.set_rng_state(st["torch_rng"].cpu())
+    np.random.set_state(st["np_rng"])
+    print(f"resumed from {CKPT} at step {start_step}", flush=True)
+
+
+def save_ckpt(step):
+    tmp = CKPT + ".tmp"
+    torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
+                "sched": sched.state_dict(), "step": step,
+                "torch_rng": torch.get_rng_state(),
+                "np_rng": np.random.get_state()}, tmp)
+    os.replace(tmp, CKPT)      # atomic: a job killed mid-write leaves the old one
+
+
 rng = np.random.default_rng(a.seed)
 t0 = time.time()
-for step in range(a.steps):
+for step in range(start_step, a.steps):
     idx = torch.randint(0, len(sol_tr), (a.bs,))
     xb, ab = sol_tr[idx].clone(), blank_tr[idx]
     if a.augment:
@@ -93,6 +123,9 @@ for step in range(a.steps):
     opt.step(); sched.step()
     if step % 5000 == 0:
         print(f"step {step:6d} loss {loss.item():.4f} ({time.time()-t0:.0f}s)", flush=True)
+    if a.ckpt_every and step and step % a.ckpt_every == 0:
+        save_ckpt(step)
+save_ckpt(a.steps)
 
 model.eval()
 res = {"args": vars(a), "decode": {}}
