@@ -455,18 +455,26 @@ escapes the problem because its prompt is visible, so the input is not constant.
 Swapping the relative encoding for absolute position embeddings, everything else
 identical:
 
-| family | V* | encoding | @1 pass | % of ceiling |
-|---|---|---|---|---|
-| bipartite | 93.63% | RoPE | 5.87% | 6.3% |
-| **bipartite** | **93.63%** | **absolute** | **94.19%** | **100.6%** |
+Bipartite, `V* = 93.63%`, two seeds per encoding:
+
+| encoding | @1 pass | % of ceiling | per-seed |
+|---|---|---|---|
+| RoPE (relative) | 5.87% | 6.3% | 5.81, 5.93 |
+| **APE (learned absolute)** | **93.91%** | **100.3%** | 94.19, 93.63 |
+| **sinusoidal (fixed absolute)** | **93.95%** | **100.3%** | 94.14, 93.75 |
 
 **A 16× improvement, landing exactly on the information-theoretic ceiling.** The
-87.7-point gap was never untrained capacity — it was inexpressible, and the
-model reaches the bound the moment the architecture can represent the answer.
+87.7-point gap was never untrained capacity — it was inexpressible, and the model
+reaches the bound the moment the architecture can represent the answer.
 
-*(Absolute is one seed so far, and the matching control — where marginals are
-already constant and RoPE should therefore suffice — is still running. If
-absolute embeddings "help" there too, this mechanism is wrong.)*
+Two things make this hard to explain any other way. **Sinusoidal encodings carry
+no learned parameters at all and perform identically to learned embeddings**, so
+the gain is not extra capacity — it is absolute position information specifically.
+And the seed spread is 0.12–0.56 points, with none of the bimodality that makes
+the addition results fragile.
+
+*(The matching control — constant marginals, where RoPE should already suffice
+and absolute encodings should therefore change nothing — is still running.)*
 
 The consequence is general and goes beyond this project: **one-pass masked
 diffusion needs absolute position information, and the field's default encoding
