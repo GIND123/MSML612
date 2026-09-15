@@ -566,10 +566,23 @@ average slot). **The prediction was registered before the runs.**
 | 32 | 67.72% | **95.74%** |
 | 45 | 77.48% | **99.69%** |
 
-**The standard formulation never exceeds 80% validity at any step count**, and its
-curve is non-monotonic (72.2 → 69.3 → 67.7 → 77.5), which is what a model that
-cannot represent the target looks like. With absolute position information the
-curve is clean and monotonic to 99.69%.
+**Under our flat encoding the standard formulation never exceeds 80% validity**,
+and its curve is non-monotonic (72.2 → 69.3 → 67.7 → 77.5). With absolute
+position information the curve is clean and monotonic to 99.69%.
+
+> **⚠ Half of that gap was our own representation.** Our encoding uses fixed
+> node slots, so the model must learn slot-specific occupancy — exactly the
+> position-dependence a relative encoding cannot express. DiGress does not
+> generate this way: it samples the atom count *n* first, then builds an *n*-node
+> graph, so the problem never arises. Re-decoding the same checkpoints with *n*
+> given and unused slots observed — DiGress's setup, strictly generous to the
+> baseline — the relative arm rises from 77.5% to **89.1%**, while absolute stays
+> at 99.8%. The gap narrows from **22.2 to 10.7 points**.
+>
+> The effect is real but roughly **half** the size the flat encoding suggested,
+> and the "never exceeds 80%" framing does not survive a fair baseline. The
+> headline table below is kept because it is what the flat representation gives,
+> but the 10.7-point figure is the one to quote.
 
 ### The uniqueness collapse
 
