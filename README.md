@@ -620,6 +620,55 @@ against 77.48%). On this benchmark the position encoding is the whole story. The
 two findings are independent, and only the second transfers here; that is reported
 rather than blurred into a single combined claim.
 
+## 3d. Sudoku — a benchmark win, and a prediction of ours that failed
+
+SATNet's 9x9 Sudoku (Wang et al., ICML 2019), the conventional 9,000/1,000 split,
+scored by **board accuracy** — all 81 cells correct. The published number is
+**98.3%**.
+
+Leakage audited before use: **0/1000** test puzzles appear in training, **0/1000**
+solutions appear in training, and **0/1000** solutions match a training solution
+even up to digit relabelling — which is the vector our augmentation could
+otherwise have exploited. All 9,000 training and 1,000 test solutions are
+distinct.
+
+**Un-augmented arm — like-for-like with SATNet:**
+
+| denoising passes | board accuracy |
+|---|---|
+| **1** | **87.85%** |
+| **2** | **98.65%** |
+| 4 | 98.85% |
+| 8 | 99.70% |
+| 16 | 99.90% |
+| **32** | **100.00%** |
+
+**Two forward passes already exceed the published 98.3%, and 32 passes solve all
+1,000 test puzzles exactly.** A single pass — the whole grid committed at once —
+solves 87.85% of them.
+
+### The prediction we got wrong
+
+We registered, before running, that entropy-budgeted decoding would beat fixed-`K`
+here "by a very large margin, larger than anywhere else in this project", because
+Sudoku is where commit *order* seemed to carry the information. It does not: it
+**loses on every arm**, by 0.35 to 1.40 points.
+
+**That prediction contradicted our own framework, and the framework was right.**
+The entropy budget is the fix for mode (ii), the total correlation among
+committed positions. Sudoku has a unique answer, so `TC = 0` and there is nothing
+for it to fix — the bound says so directly, and we argued past it because
+"constraint propagation" was an appealing story. Recorded because a framework
+that predicts against its author's intuition and wins is worth more than one that
+only ever agrees with it.
+
+### What the win is, and is not
+
+The 100% comes from the **plain MDLM baseline** with fixed-`K` decoding. Neither
+of this project's training findings contributes: the standard formulation already
+saturates this benchmark. So it is a result for masked diffusion on SATNet
+Sudoku, **not** evidence for our method, and it is reported as such.
+
 ## 4. The limit that cannot be trained away
 
 Where a group of positions must agree but *which* value they take is free, the
