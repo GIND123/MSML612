@@ -647,6 +647,18 @@ distinct.
 1,000 test puzzles exactly.** A single pass — the whole grid committed at once —
 solves 87.85% of them.
 
+> **⚠ RETRACTED as a benchmark claim: this split is saturated.** Plain constraint
+> propagation — naked and hidden singles, no search, no backtracking, about forty
+> lines — solves **1000/1000 = 100.00%** of the test puzzles. So 100% is the
+> expected result for any competent method and demonstrates nothing, ours
+> included; the published 98.3% is itself *below* what a search-free classical
+> solver achieves. The statistics are clean (95% CI [99.62, 100.00], both seeds
+> 100.0, p = 3.6e-08 against 98.3%) and beside the point, because the comparison
+> is not informative. We report the number and withdraw the claim.
+>
+> The clue counts explain it: 32–41 per puzzle, mean 36.2, which is easy Sudoku.
+> §3e evaluates on instances that actually discriminate.
+
 ### The prediction we got wrong
 
 We registered, before running, that entropy-budgeted decoding would beat fixed-`K`
@@ -664,10 +676,29 @@ only ever agrees with it.
 
 ### What the win is, and is not
 
-The 100% comes from the **plain MDLM baseline** with fixed-`K` decoding. Neither
-of this project's training findings contributes: the standard formulation already
-saturates this benchmark. So it is a result for masked diffusion on SATNet
-Sudoku, **not** evidence for our method, and it is reported as such.
+Two separate reasons not to claim it. The 100% comes from the **plain MDLM
+baseline** with fixed-`K` decoding, so neither of this project's training findings
+contributes. And the split is saturated, so the number distinguishes nothing.
+
+## 3e. Sudoku that actually discriminates
+
+Harder instances are built from the same solutions by stripping clues, checking
+after **every** removal that the solution stays unique, so accuracy remains well
+defined. The result is a difficulty axis on which a search-free classical solver
+clearly fails:
+
+| clues | constraint propagation alone |
+|---|---|
+| 36 (the SATNet split) | **100.0%** |
+| 30 | **27.5%** |
+| 26 | **4.2%** |
+| 22 | **3.3%** |
+
+The models were trained on 31–42 clues, so all three harder sets are also out of
+distribution: this measures whether they learned Sudoku or learned a clue
+density. The decoding comparison is repeated here because this is where it should
+finally matter — with fewer clues the marginals are no longer near-perfect, so
+commit order has something to do. *(Evaluation running.)*
 
 ## 4. The limit that cannot be trained away
 

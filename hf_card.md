@@ -92,6 +92,32 @@ out capacity; the control rules out "absolute is simply better". Predicted 5/5
 before measurement, and the treated arm lands at **100.3% of `V*`** — at the
 bound, not merely higher.
 
+## Benchmark: SATNet Sudoku
+
+9x9 Sudoku, SATNet's conventional 9,000/1,000 split, **board accuracy** = all 81
+cells correct. Published number: **98.3%** (Wang et al., ICML 2019).
+
+Un-augmented arm, which is the only like-for-like comparison:
+
+| denoising passes | board accuracy |
+|---|---|
+| **1** | **87.85%** |
+| **2** | **98.65%** |
+| 8 | 99.70% |
+| **32** | **100.00%** |
+
+Two passes exceed the published number; 32 passes solve **all 1,000** test
+puzzles exactly. One pass — the entire grid committed at once — solves 87.85%.
+
+Leakage audited first: 0/1000 test puzzles in training, 0/1000 test solutions in
+training, and 0/1000 test solutions matching a training solution even up to digit
+relabelling. All 10,000 solutions are distinct.
+
+**Scoped honestly:** this comes from the *plain MDLM baseline* with fixed-`K`
+decoding. Neither finding above contributes — the standard formulation already
+saturates this benchmark. It is a result for masked diffusion on SATNet Sudoku,
+not evidence for our method.
+
 ## Negative results, reported
 
 - **Any-budget conditioning fails.** Sampling the decoding budget during training
@@ -105,6 +131,11 @@ bound, not merely higher.
   from 22.2 to 10.7 points.
 - **16-digit addition is unsettled** — a compute-matched baseline reaches 100% on
   one seed of two.
+- **Our Sudoku prediction was refuted by our own framework.** We registered that
+  entropy-budgeted decoding would beat fixed-`K` on Sudoku by the largest margin
+  in the project. It loses on every arm by 0.35–1.40 points. The prediction
+  contradicted the bound: Sudoku has a unique answer, so `TC = 0` and there is
+  nothing for a mode-(ii) fix to repair.
 
 ## Audit
 
