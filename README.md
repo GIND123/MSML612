@@ -455,13 +455,16 @@ escapes the problem because its prompt is visible, so the input is not constant.
 Swapping the relative encoding for absolute position embeddings, everything else
 identical:
 
-Bipartite, `V* = 93.63%`, two seeds per encoding:
+Complete grid, two seeds per cell:
 
-| encoding | @1 pass | % of ceiling | per-seed |
-|---|---|---|---|
-| RoPE (relative) | 5.87% | 6.3% | 5.81, 5.93 |
-| **APE (learned absolute)** | **93.91%** | **100.3%** | 94.19, 93.63 |
-| **sinusoidal (fixed absolute)** | **93.95%** | **100.3%** | 94.14, 93.75 |
+| family | marginals | encoding | @1 pass | % of ceiling | per-seed |
+|---|---|---|---|---|---|
+| bipartite | **vary** | RoPE (relative) | 5.87% | 6.3% | 5.81, 5.93 |
+| bipartite | **vary** | **APE (learned)** | **93.91%** | **100.3%** | 94.19, 93.63 |
+| bipartite | **vary** | **sinusoidal (no params)** | **93.95%** | **100.3%** | 94.14, 93.75 |
+| matching | constant | RoPE | 0.78% | 94.7% | 0.78, 0.78 |
+| matching | constant | APE | 0.76% | 91.8% | 0.76, 0.76 |
+| matching | constant | sinusoidal | 0.78% | 94.7% | 0.76, 0.81 |
 
 **A 16× improvement, landing exactly on the information-theoretic ceiling.** The
 87.7-point gap was never untrained capacity — it was inexpressible, and the model
@@ -478,18 +481,24 @@ the addition results fragile.
 If absolute encodings were simply better, they would help everywhere. The
 mechanism says they should help **only** where marginals differ across positions.
 
-| family | marginals | RoPE | absolute | effect |
-|---|---|---|---|---|
-| bipartite | **vary** (0.000 / 0.530) | 5.87% | 93.91% | **+88.04 points** |
-| matching | **constant** (all 0.200) | 0.78% | 0.76% | **−0.024 points** |
+Effect of absolute position information, by condition and encoding:
 
-**A ~3,700× difference in effect size between the two conditions.** Absolute
-position information transforms the case that needs it and does nothing
-measurable in the case that does not. That dissociation, together with the
-parameter-free sinusoidal variant matching learned embeddings exactly, pins the
-mechanism down: it is neither capacity nor a general advantage of absolute
-encodings, but the specific inability of a relative encoding to distinguish
-positions when the input is uniform.
+| | learned (APE) | parameter-free (sinusoidal) |
+|---|---|---|
+| marginals **vary** | **+88.037 points** | **+88.074 points** |
+| marginals **constant** | **−0.024 points** | **+0.000 points** |
+
+Two independent absolute encodings agree to within **0.04 points** on the
+treatment and both give essentially **exactly zero** on the control — a ~3,700×
+difference in effect size between conditions. Seed variance is negligible
+throughout (matching/RoPE is 0.78, 0.78).
+
+That closes both alternative explanations. **Capacity** is ruled out by the
+sinusoidal variant, which has no learned parameters and matches the learned
+embedding exactly. **"Absolute encodings are simply better"** is ruled out by the
+control, where they are worth nothing. What remains is the mechanism as stated:
+a relative encoding cannot distinguish positions when the input is uniform, which
+is precisely the state a one-pass decode begins from.
 
 The consequence is general and goes beyond this project: **one-pass masked
 diffusion needs absolute position information, and the field's default encoding
