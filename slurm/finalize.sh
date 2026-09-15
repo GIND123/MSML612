@@ -43,23 +43,14 @@ for d in $STAR/runs/*/; do
 done
 echo "  results backed up: $(ls $HOME_BK/results | wc -l)"
 
-echo "=== 3. back up weights to HOME (nightly-backed-up) ==="
-# SHELL was the original target but /afs/shell.umd.edu/project/msml612 is
-# drwx------ and owned by root, so it is unwritable from BOTH login and compute
-# nodes - every previous run skipped this step silently. HOME is the tier that
-# is actually backed up nightly and has ample free space for the weights.
-mkdir -p $HOME_BK/weights
-n=0
-for d in $STAR/runs/*/; do
-  b=$(basename $d)
-  if [ -f "$d/model.pt" ]; then
-    # copy only when missing or newer, so repeated finalize runs stay cheap
-    if [ ! -f "$HOME_BK/weights/$b.pt" ] || [ "$d/model.pt" -nt "$HOME_BK/weights/$b.pt" ]; then
-      cp -f "$d/model.pt" "$HOME_BK/weights/$b.pt" && n=$((n+1))
-    fi
-  fi
-done
-echo "  weights copied this run: $n  (total: $(ls $HOME_BK/weights 2>/dev/null | wc -l), $(du -sh $HOME_BK/weights 2>/dev/null | cut -f1))"
+echo "=== 3. weights: NOT copied to HOME (quota is 9.5G soft / 19G hard) ==="
+# An earlier version copied every model.pt here. That is 15G, which blew through
+# both the soft quota and the hard limit, left HOME unwritable, and silently
+# broke the Hugging Face push for five consecutive retries - the staging README
+# could not be written. Weights stay on scratch; a curated subset goes to the
+# Hub in step 4, where there is no such quota.
+echo "  weights remain on scratch: $(ls -d $STAR/runs/*/model.pt 2>/dev/null | wc -l) checkpoints"
+echo "  HOME usage now: $(du -sh $HOME_BK 2>/dev/null | cut -f1)"
 
 echo "=== 4. push to Hugging Face (with retries) ==="
 # A transient network failure must not mean the results never reach the Hub, so
