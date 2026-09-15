@@ -6,14 +6,19 @@ builds instances that do.
 
 Each puzzle is MINIMAL: cells are removed from a completed grid in random order
 and a removal is kept only if the solution is still unique, verified by an
-exhaustive counter that stops at two. The result carries 22-26 clues, where
-constraint propagation alone solves roughly 4%. No puzzle is accepted without
+exhaustive counter that stops at two. The result carries roughly 19-30 clues
+(mean 24), where constraint propagation alone solves about 4%. No puzzle is accepted without
 that uniqueness check, so board accuracy remains a well-defined quantity.
 
-Solutions come from a shuffled seed grid transformed by the Sudoku symmetry
-group - digit relabelling, band and stack permutations, row and column swaps
-within bands, and transposition - which generates valid grids far faster than
-solving from empty, and uniformly enough for a benchmark.
+Solutions come from a randomised backtracking fill of an EMPTY grid, which
+reaches the full space of roughly 6.7e21 valid grids.
+
+An earlier version applied the Sudoku symmetry group to a single seed grid
+instead. That was much faster and completely wrong: every grid it produced lay
+in one equivalence class, whose size modulo digit relabelling is only about 3.4
+million, so 101,000 draws collided constantly and 767 of 1000 test solutions
+already appeared in training. The assertion below caught it. It is kept, and it
+is the reason the slower fill is used.
 
 Train and test are built from DISJOINT solution grids and the script asserts
 that no test solution appears in training, in any relabelling.
@@ -47,8 +52,7 @@ def _peers():
 
 
 PEERS = _peers()
-BASE = np.array([[(3 * (r % 3) + r // 3 + c) % 9 + 1 for c in range(9)]
-                 for r in range(9)], dtype=np.int64)
+
 
 
 def candidates(g):
@@ -95,26 +99,49 @@ def count_solutions(grid, limit=2):
 
 
 def random_solution(rng):
-    """A valid completed grid, via the Sudoku symmetry group applied to a seed."""
-    g = BASE.copy()
-    g = np.vectorize({d: v for d, v in
-                      zip(range(1, 10), rng.permutation(9) + 1)}.get)(g)
-    for band in range(3):                       # rows within each band
-        idx = band * 3 + rng.permutation(3)
-        g[band * 3:band * 3 + 3] = g[idx]
-    for stack in range(3):                      # columns within each stack
-        idx = stack * 3 + rng.permutation(3)
-        g[:, stack * 3:stack * 3 + 3] = g[:, idx]
-    g = g[np.concatenate([b * 3 + np.arange(3) for b in rng.permutation(3)])]
-    g = g[:, np.concatenate([s * 3 + np.arange(3) for s in rng.permutation(3)])]
-    if rng.random() < 0.5:
-        g = g.T
-    return g.reshape(-1)
+    """A uniformly-ish random completed grid, by randomised backtracking fill.
+
+    The previous version applied the Sudoku symmetry group to a single seed grid.
+    Every grid it produced therefore lay in ONE equivalence class, whose size
+    modulo digit relabelling is only about 3.4 million - so drawing 101,000
+    samples collided constantly, and 767 of 1000 test solutions turned out to
+    already appear in training. Filling an empty grid instead reaches the full
+    space of roughly 6.7e21 valid grids, where collisions are impossible in
+    practice.
+    """
+    g = [0] * CELLS
+    while True:
+        cand = candidates(g)
+        if cand is None:
+            return None
+        best, bi = 10, -1
+        for i in range(CELLS):
+            if g[i] == 0:
+                n = bin(cand[i]).count("1")
+                if n < best:
+                    best, bi = n, i
+        if bi < 0:
+            return np.array(g, dtype=np.int64)
+        digits = [d + 1 for d in range(9) if cand[bi] & (1 << d)]
+        rng.shuffle(digits)
+        placed = False
+        for d in digits:
+            g[bi] = d
+            if candidates(g) is not None:
+                placed = True
+                break
+            g[bi] = 0
+        if not placed:
+            # dead end: restart rather than backtrack; restarts are rare and a
+            # fresh fill is cheaper than unwinding a deep search
+            g = [0] * CELLS
 
 
 def make_one(seed):
     rng = np.random.default_rng(seed)
-    sol = random_solution(rng)
+    sol = None
+    while sol is None:
+        sol = random_solution(rng)
     g = [int(v) for v in sol]
     for c in rng.permutation(CELLS):
         keep = g[c]
