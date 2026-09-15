@@ -408,13 +408,40 @@ ceiling.** Three families, ceilings spanning 32× (0.289% to 9.249%), and in eve
 case the interval contains `V*`. The residual failure there is provably mode (ii)
 and no training objective can recover it.
 
-**Where dependence is nearly absent, the failure is entirely trainable — and
-nothing we tried trains it.** Bipartite has `TC = 0.11` bits, so one-pass
-decoding should be almost free at 93.6%, yet both the baseline and the
-budget-conditioned model reach only 5.9%. That is **87.7 points of purely mode-(i)
-headroom left on the table**, and it is the clearest open problem this framework
-produces: an exactly quantified gap that is known to be trainable and that no
-method here closes.
+**Where dependence is nearly absent, the model fails anyway — and the reason is
+architectural, not statistical.** Bipartite has `TC = 0.11` bits, so one-pass
+decoding should be almost free at 93.6%, yet every model reaches only 5.9%.
+
+That gap is **not** untrained capacity. At `t = 1` every input token is `[MASK]`,
+so the input sequence is **constant**. With a purely relative position encoding
+the attention score between positions *i* and *j* depends only on `(i − j)`, and
+when every value vector is identical a layer's output is `v · Σ attn = v` — the
+same at every position. Boundary effects aside, **a RoPE-only model cannot
+express position-dependent marginals at the fully-masked state.** It is an
+expressivity limit, so no amount of training removes it.
+
+The completed families confirm this exactly, and the prediction is a dichotomy
+rather than a trend:
+
+| family | marginal spread across edge slots | distinct values | one pass |
+|---|---|---|---|
+| matching | **0.0000** | 1 (all 0.200) | ✅ at ceiling |
+| 2-regular | **0.0000** | 1 (all 0.400) | ✅ at ceiling |
+| tree | **0.0000** | 1 (all 0.333) | ✅ at ceiling |
+| **bipartite** | **0.5300** | 2 (0.000, 0.530) | ❌ **16× below** |
+
+Every vertex-transitive family has *exactly* constant marginals, which RoPE can
+represent, and every one of them lands on its ceiling. The one family requiring
+different marginals at different positions is the one that fails. Addition
+escapes the problem because its prompt is visible, so the input is not constant.
+
+A grid testing absolute and sinusoidal encodings against RoPE is running, with
+**matching as the control**: if absolute embeddings also "help" where the
+marginals are already constant, this mechanism is wrong.
+
+If it holds, the consequence is general and goes beyond this project: **one-pass
+masked diffusion needs absolute position information, and the field's default
+encoding silently caps it.**
 
 Coverage confirms none of this is degeneracy — 100% of the matching and
 2-regular families are recovered at K = 8.
