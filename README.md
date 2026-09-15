@@ -544,6 +544,63 @@ which would have measured generated samples against a target the representation
 could not reach. Kekulised and charge-filtered, round-trip is 100.00% while
 keeping 99.1% of the dataset.
 
+## 3c. QM9 — the finding on a standard benchmark
+
+QM9 molecular generation, from scratch, 9 node slots + 36 edge slots = 45 tokens.
+Validity is RDKit sanitisation, which enforces valency at every atom at once — an
+unambiguous metric needing no evaluator model. Two seeds per arm; everything but
+the named factor held fixed.
+
+QM9 was chosen because it is the strongest case for §3b's prediction: its
+marginals are extremely position-dependent (node slot 8 is *never* occupied,
+slot 7 is occupied 80% of the time, slots 0–2 always are, and edge slots run from
+never-bonded to always-bonded — mean total-variation distance 0.435 from the
+average slot). **The prediction was registered before the runs.**
+
+| denoising steps | standard (uniform-`t` + relative) | **+ absolute encoding** |
+|---|---|---|
+| 1 | 0.01% | **29.92%** |
+| 4 | 29.33% | **55.80%** |
+| 8 | 72.20% | 72.11% |
+| 16 | 69.30% | **86.06%** |
+| 32 | 67.72% | **95.74%** |
+| 45 | 77.48% | **99.69%** |
+
+**The standard formulation never exceeds 80% validity at any step count**, and its
+curve is non-monotonic (72.2 → 69.3 → 67.7 → 77.5), which is what a model that
+cannot represent the target looks like. With absolute position information the
+curve is clean and monotonic to 99.69%.
+
+### The uniqueness collapse
+
+Validity alone would understate how badly the standard setup fails:
+
+| steps | standard | + absolute |
+|---|---|---|
+| 8 | **4.9%** | 99.2% |
+| 16 | 9.7% | 98.7% |
+| 45 | 41.1% | 98.1% |
+
+**Its 72.2% validity at 8 steps comes from emitting the same handful of molecules
+repeatedly.** It is not generating a distribution, it is collapsing onto a few
+points; absolute encoding holds 98–99% uniqueness throughout. Reporting validity
+without uniqueness on this benchmark would hide the failure entirely.
+
+### Steps to reach a validity target
+
+| formulation | 50% | 80% | 90% | 95% |
+|---|---|---|---|---|
+| standard | 8 | **never** | **never** | **never** |
+| **+ absolute** | **4** | **16** | **32** | **32** |
+
+### What does *not* replicate here
+
+Schedule matching — §1's finding — buys essentially nothing on QM9 (99.65% against
+99.69% at 45 steps), and paired with a relative encoding it actively hurts (44.87%
+against 77.48%). On this benchmark the position encoding is the whole story. The
+two findings are independent, and only the second transfers here; that is reported
+rather than blurred into a single combined claim.
+
 ## 4. The limit that cannot be trained away
 
 Where a group of positions must agree but *which* value they take is free, the
