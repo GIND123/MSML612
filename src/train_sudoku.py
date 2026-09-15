@@ -34,6 +34,10 @@ def get_args():
     p.add_argument("--lam", type=float, default=1.0)
     p.add_argument("--pe", default="ape", choices=["ape", "rope", "sin"])
     p.add_argument("--root", default="data/sudoku")
+    p.add_argument("--hard", default="",
+                   help="directory of the generated HARD benchmark (npy files); "
+                        "overrides --root. Minimal puzzles at ~24 clues, where "
+                        "constraint propagation alone solves about 4%")
     p.add_argument("--augment", action="store_true",
                    help="relabel digits by a random permutation (a Sudoku symmetry)")
     p.add_argument("--d", type=int, default=512)
@@ -56,10 +60,22 @@ torch.manual_seed(a.seed); np.random.seed(a.seed)
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 os.makedirs(a.out, exist_ok=True)
 
-X, Y, tok = load_satnet(a.root)
-(Xtr, Ytr), (Xte, Yte) = split(X, Y)
-print(f"sudoku: train {Xtr.shape} test {Xte.shape} vocab {len(tok)}  "
-      f"clues/puzzle mean {(X>0).sum(1).mean():.1f}", flush=True)
+if a.hard:
+    # the generated benchmark: minimal puzzles, uniqueness verified per removal,
+    # train/test solutions disjoint even up to digit relabelling
+    Xtr = np.load(os.path.join(a.hard, "train_puz.npy"))
+    Ytr = np.load(os.path.join(a.hard, "train_sol.npy"))
+    Xte = np.load(os.path.join(a.hard, "test_puz.npy"))
+    Yte = np.load(os.path.join(a.hard, "test_sol.npy"))
+    tok = SudokuTokenizer()
+    print(f"HARD sudoku: train {Xtr.shape} test {Xte.shape}  "
+          f"clues mean {(Xtr>0).sum(1).mean():.1f} "
+          f"(min {(Xtr>0).sum(1).min()} max {(Xtr>0).sum(1).max()})", flush=True)
+else:
+    X, Y, tok = load_satnet(a.root)
+    (Xtr, Ytr), (Xte, Yte) = split(X, Y)
+    print(f"sudoku: train {Xtr.shape} test {Xte.shape} vocab {len(tok)}  "
+          f"clues/puzzle mean {(X>0).sum(1).mean():.1f}", flush=True)
 
 # tokens are the SOLUTION digits shifted to 0-8; blanks are what gets masked
 sol_tr = torch.from_numpy(Ytr - 1)
@@ -161,7 +177,7 @@ print("\n=== board accuracy against decoding budget ===", flush=True)
 print(f"  {'rule':<26}{'NFE':>7}{'BOARD':>10}{'cell':>9}{'valid':>9}", flush=True)
 
 print("fixed-K (commits a fixed share per pass, ignoring certainty):", flush=True)
-for K in (1, 2, 4, 8, 16, 32, 45):
+for K in (1, 2, 4, 8, 16, 32, 61):
     report(f"fixed-K K={K}", f"fixedK_{K}",
            evaluate(lambda x, bl, K=K: dfn.fixed_k_decode(
                model, x, tok, dev, K, fillable=bl)))
