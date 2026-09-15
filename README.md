@@ -473,8 +473,23 @@ the gain is not extra capacity — it is absolute position information specifica
 And the seed spread is 0.12–0.56 points, with none of the bimodality that makes
 the addition results fragile.
 
-*(The matching control — constant marginals, where RoPE should already suffice
-and absolute encodings should therefore change nothing — is still running.)*
+### The control
+
+If absolute encodings were simply better, they would help everywhere. The
+mechanism says they should help **only** where marginals differ across positions.
+
+| family | marginals | RoPE | absolute | effect |
+|---|---|---|---|---|
+| bipartite | **vary** (0.000 / 0.530) | 5.87% | 93.91% | **+88.04 points** |
+| matching | **constant** (all 0.200) | 0.78% | 0.76% | **−0.024 points** |
+
+**A ~3,700× difference in effect size between the two conditions.** Absolute
+position information transforms the case that needs it and does nothing
+measurable in the case that does not. That dissociation, together with the
+parameter-free sinusoidal variant matching learned embeddings exactly, pins the
+mechanism down: it is neither capacity nor a general advantage of absolute
+encodings, but the specific inability of a relative encoding to distinguish
+positions when the input is uniform.
 
 The consequence is general and goes beyond this project: **one-pass masked
 diffusion needs absolute position information, and the field's default encoding
