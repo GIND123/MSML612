@@ -26,9 +26,17 @@ from qm9 import MolTokenizer, SEQ_LEN, load_qm9, validity
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["mdlm", "anybudget", "anybudget_nc"],
+    p.add_argument("--mode",
+                   choices=["mdlm", "matched", "anybudget", "anybudget_nc"],
                    default="mdlm")
+    p.add_argument("--K", type=int, default=8,
+                   help="budget the schedule is matched to (mode=matched)")
     p.add_argument("--budget_bins", type=int, default=8)
+    p.add_argument("--pe", default="rope",
+                   choices=["rope", "ape", "sin", "alibi", "nope"],
+                   help="QM9 marginals are strongly position-dependent (slot 8 is "
+                        "never occupied, some edge slots never bond), so this is "
+                        "predicted to matter a great deal at low step counts")
     p.add_argument("--root", default="data/qm9")
     p.add_argument("--limit", type=int, default=0, help="0 = all molecules")
     p.add_argument("--d", type=int, default=384)
@@ -57,10 +65,10 @@ Xt = torch.from_numpy(X)
 ALLOWED = torch.from_numpy(tok.allowed_mask()).to(dev)
 
 COND = a.mode == "anybudget"
-model = Transformer(len(tok), a.d, a.layers, a.heads, "rope", causal=False,
+model = Transformer(len(tok), a.d, a.layers, a.heads, a.pe, causal=False,
                     max_len=SEQ_LEN + 8,
                     budget_bins=a.budget_bins if COND else 0).to(dev)
-print(f"params {model.n_params()/1e6:.2f}M  mode={a.mode}", flush=True)
+print(f"params {model.n_params()/1e6:.2f}M  mode={a.mode}  pe={a.pe}", flush=True)
 
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
 sched = torch.optim.lr_scheduler.LambdaLR(
@@ -76,6 +84,8 @@ for step in range(a.steps):
         if a.mode in ("anybudget", "anybudget_nc"):
             loss = dfn.uncond_any_budget_loss(model, xb, tok, choices=BUDGETS,
                                               condition=COND)
+        elif a.mode == "matched":
+            loss = dfn.uncond_mdlm_loss(model, xb, tok, "matched", a.K)
         else:
             loss = dfn.uncond_mdlm_loss(model, xb, tok, "uniform")
     loss.backward()
