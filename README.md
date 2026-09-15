@@ -45,17 +45,23 @@ arithmetic, where (ii) is identically zero and all the loss is (i).
 
 ## What we tried, and what happened
 
-Summarised up front, because two of the three were negative and burying that
-would misrepresent the work:
+Summarised up front, because half of it is negative and burying that would
+misrepresent the work:
 
 | | approach | verdict |
 |---|---|---|
 | **fix (i), single budget** | train at the mask ratios one known budget visits | **works, and survives its compute control** — 99.9% against 0.0% at 20-digit addition even when the baseline is given 2× the training; beats the MDLM objective at every budget on text8 *and* on bits-per-character |
-| fix (i), all budgets | sample the budget and condition on it | **fails** — worse at every budget on graphs, destroys the task on addition, worse BPC on text8 |
+| **architecture** | give the denoiser **absolute** position information | **works, and is the strongest result here** — at `t = 1` the input is uniform, so a relative encoding cannot express position-dependent marginals *at any training budget*. +88 points where marginals vary, −0.02 in the control, landing at 100.3% of the exact bound. Predicted 5/5 before measurement |
 | fix (ii) | commit while summed conditional entropy stays under `B` nats | **mixed** — competitive on graphs, loses to fixed-`K` on text8 |
+| fix (i), all budgets | sample the budget and condition on it | **fails** — worse at every budget on graphs, destroys the task on addition, worse BPC on text8 |
+
+The two positives are independent and do not transfer alike: schedule matching
+carries addition and text8 but does nothing on QM9, while absolute position
+information carries QM9 and the graph families. They are reported as two findings
+rather than merged into one combined claim.
 
 The framework itself — deciding which mode a given failure belongs to, and
-bounding how much of it is recoverable — is what survives all three.
+bounding how much of it is recoverable — is what survives all four.
 
 ## Fix (i): train the schedule you intend to decode at
 
