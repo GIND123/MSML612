@@ -142,3 +142,53 @@ if __name__ == "__main__":
     tr = {bytes(r) for r in Xtr[::3]}
     ov = sum(bytes(r) in tr for r in Xte)
     print(f"test puzzles also seen in the training sample: {ov}  (must be 0)")
+
+
+def _unit_list():
+    us = []
+    for r in range(GRID):
+        us.append([r * GRID + c for c in range(GRID)])
+    for c in range(GRID):
+        us.append([r * GRID + c for r in range(GRID)])
+    for br in range(0, GRID, 3):
+        for bc in range(0, GRID, 3):
+            us.append([(br + dr) * GRID + bc + dc for dr in range(3) for dc in range(3)])
+    return us
+
+
+UNIT_LIST = _unit_list()
+
+
+def violation_mask(x):
+    """Positions involved in a row/column/box duplicate. Exact, not heuristic.
+
+    x is (B, 81) of token ids 0-8. A cell is flagged when its value appears more
+    than once in any unit it belongs to. A solved grid flags nothing, so this
+    doubles as the stopping condition for verifier-guided remasking.
+    """
+    import torch
+    B = x.shape[0]
+    bad = torch.zeros_like(x, dtype=torch.bool)
+    for unit in UNIT_LIST:
+        idx = torch.tensor(unit, device=x.device)
+        vals = x[:, idx]                                   # (B, 9)
+        same = vals[:, :, None] == vals[:, None, :]        # (B, 9, 9)
+        dup = same.sum(-1) > 1                             # appears more than once
+        bad[:, idx] |= dup
+    return bad
+
+
+def expand_to_units(bad):
+    """Widen a violation mask to every cell sharing a unit with a flagged cell.
+
+    Re-deciding a single conflicting cell in an otherwise unchanged context tends
+    to reproduce the same value. Reopening its row, column and box gives the
+    model a subproblem it can actually re-solve.
+    """
+    import torch
+    out = torch.zeros_like(bad)
+    for unit in UNIT_LIST:
+        idx = torch.tensor(unit, device=bad.device)
+        hit = bad[:, idx].any(1, keepdim=True)             # (B, 1)
+        out[:, idx] |= hit
+    return out

@@ -808,3 +808,63 @@ def cond_decode_budget(model, x0, amask, tok, steps, device, condition=True):
     if rem.any() and pred is not None:
         x[rem] = pred[rem]
     return x
+
+
+# --------------------------------------------- verifier-guided remasking ---
+# Masked diffusion decoding is ABSORBING: once a position is unmasked it can
+# never be revised. On a constraint problem that is fatal - three wrong cells out
+# of fifty-seven destroy a whole board, which is exactly the observed failure
+# mode (94.9% of cells correct but only 87.9% of boards).
+#
+# When the task has a checkable constraint, the repair signal is exact rather
+# than heuristic: we know precisely which positions conflict. Remask only those,
+# re-decode them against the surviving context, and repeat. This is the diffusion
+# analogue of the propagate-detect-backtrack loop every classical solver runs,
+# and unlike a confidence heuristic it never remasks a position that is provably
+# fine.
+#
+# The per-position remask counter is what keeps it terminating: a cell that has
+# already been reopened `max_revisits` times is frozen, so two mutually
+# inconsistent cells cannot flip each other forever.
+
+@torch.no_grad()
+def verifier_remask_decode(model, x, tok, device, violation_fn, base_steps=16,
+                           rounds=8, max_revisits=3, fillable=None,
+                           expand_peers=None, allowed=None, temperature=1.0):
+    """Decode, then repeatedly remask whatever a verifier says is wrong.
+
+    violation_fn(x) -> bool mask of positions involved in a violation, where x
+    holds the current token ids. `expand_peers`, if given, maps a violation mask
+    to a wider mask (for Sudoku: the conflicting cells plus their units), which
+    gives the model room to re-solve the local subproblem rather than re-guess a
+    single cell in an unchanged context.
+
+    Returns (x, nfe) with nfe counting every forward pass, so the cost of the
+    repair rounds is charged honestly against the fixed-K budgets it is compared
+    with.
+    """
+    x = x.clone().to(device)
+    can = (x == tok.mask) if fillable is None else fillable.to(device)
+    B, L = x.shape
+
+    x, nfe = fixed_k_decode(model, x, tok, device, base_steps, fillable=can,
+                            allowed=allowed, temperature=temperature)
+    revisits = torch.zeros((B, L), dtype=torch.long, device=device)
+
+    for _ in range(rounds):
+        bad = violation_fn(x).to(device) & can
+        if expand_peers is not None:
+            bad = expand_peers(bad) & can
+        # a position already reopened too often is frozen, or two conflicting
+        # cells would keep overwriting each other indefinitely
+        bad = bad & (revisits < max_revisits)
+        if not bad.any():
+            break
+        revisits = revisits + bad.long()
+        x = torch.where(bad, torch.full_like(x, tok.mask), x)
+        # re-decode only the reopened positions, against everything still held
+        steps = max(1, min(base_steps, int(bad.sum(1).max())))
+        x, n2 = fixed_k_decode(model, x, tok, device, steps, fillable=bad,
+                               allowed=allowed, temperature=temperature)
+        nfe += n2
+    return x, nfe
