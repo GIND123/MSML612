@@ -1,15 +1,86 @@
-# Two Failure Modes of Parallel Decoding in Masked Diffusion
+# Recurrent Masked Diffusion for Constraint Satisfaction
 
-**Parallel decoding fails for two different reasons that need opposite fixes.
-Telling them apart — exactly, with a bound — is the contribution.**
+**Constraint propagation is an iterative algorithm. Masked diffusion models are
+trained as fixed-depth denoisers. Making the denoiser recurrent — one
+weight-shared block applied many times, supervised at every application — closes
+a 10-point gap with 180× fewer parameters.**
 
-This is a measurement paper. It contains one method that works where its
-assumption holds, one that failed, and a framework that says which is which.
-
-Trained from scratch. No pretrained weights, no pretrained tokenizer, no
-external teacher — including the evaluator used to score generated text.
+Trained from scratch. No pretrained weights, no pretrained tokenizer.
 
 ---
+
+## The result
+
+Hard Sudoku: 1,000 held-out minimal puzzles, 20–30 clues (mean 24.4), every one
+verified to have exactly one solution, train/test solutions disjoint even up to
+digit relabelling. **Board accuracy** = all 81 cells correct.
+
+| | params | 1 pass | 16 passes | best |
+|---|---|---|---|---|
+| constraint propagation (no search) | – | – | – | **3.00%** |
+| greedy MRV, one sweep | – | – | – | 5.90% |
+| feed-forward diffusion, MDLM | 37.9M | 4.60% | 84.30% | 87.40% |
+| feed-forward diffusion, schedule-matched | 37.9M | 40.35% | 85.50% | 89.40% |
+| **recurrent diffusion, MDLM** | **~200k** | 87.35% | 94.45% | 96.55% |
+| **recurrent diffusion, schedule-matched** | **~200k** | **97.35%** | **99.20%** | **99.70%** |
+| full backtracking search | – | – | – | 100% (423 nodes) |
+
+**97.35% of hard Sudoku solved in a single forward pass**, and 99.70% overall —
+with a model 180× smaller than the feed-forward one it replaces. Both seeds agree
+(99.6, 99.8 and 97.4, 97.3).
+
+## Why it works
+
+The gap was never capacity: the 37.9M-parameter model had 180× more parameters
+and scored 10 points worse. Solving a hard Sudoku takes tens of rounds of
+eliminate-propagate-repeat, and **a fixed 12-layer network cannot express thirty
+rounds of propagation at any width.** One block applied thirty times can.
+
+This is the argument [`THEORY.md`](THEORY.md) already makes for addition — a
+*K*-pass decode has effective depth L·K and "borrows depth from the decoding
+loop" — applied to the **architecture** rather than to the decoder.
+
+Two details carry it:
+
+- **Input injection.** The token embedding is re-added at every recurrence.
+  Without it the clues decay through thirty applications of the same block.
+- **Deep supervision.** Loss is taken at *every* recurrence on a linear ramp, not
+  only the last. That forces each application to be a valid one-step refinement,
+  and it is what lets inference run **64 recurrences having trained with 32**.
+
+## The ablation is clean, and the two ingredients compose
+
+| | feed-forward | recurrent | gain |
+|---|---|---|---|
+| MDLM objective | 87.40% | 96.55% | **+9.15** |
+| schedule-matched | 89.40% | **99.70%** | **+10.30** |
+| gain from schedule matching | +2.00 | **+3.15** | |
+
+Recurrence supplies the algorithmic depth; schedule matching supplies the
+fully-masked state the decode starts from. Neither alone reaches 96%.
+
+## Published results, and what they are measured on
+
+| | accuracy | distribution | params |
+|---|---|---|---|
+| SATNet | 98.3% | SATNet split, ~36 clues | 618k |
+| SATNet | 6.1% | RRN hard, 17 clues | 618k |
+| RRN | 96.7% | RRN hard, 17 clues | 201k |
+| Recurrent Transformer | 99.5% | RRN, 17–34 clues | 211k |
+| Recurrent Transformer | 96.7% | RRN hardest, 17 clues only | 211k |
+| **ours** | **99.70%** | **ours, 20–30 clues** | **~200k** |
+
+**These are different puzzle distributions and the comparison is not exact.** Our
+20–30 clue range sits inside the Recurrent Transformer's 17–34 range but excludes
+the hardest 17-clue instances, so our number should be read as *competitive with*
+rather than *better than* theirs. The SATNet split at ~36 clues is strictly
+easier — constraint propagation alone solves 100% of it, which is why we do not
+use it. Results stratified by clue count are reported so a reader can compare at
+matched difficulty rather than take our word for it.
+
+---
+
+## The earlier study: two failure modes of parallel decoding
 
 ## The claim
 

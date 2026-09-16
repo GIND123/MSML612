@@ -32,7 +32,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model import Transformer
+from model import RecurrentDenoiser, Transformer
 import diffusion as dfn
 from sudoku import CELLS, GRID, SudokuTokenizer
 from gen_hard_sudoku import candidates, count_solutions, PEERS
@@ -45,6 +45,9 @@ PUBLISHED = [
     ("Recurrent Transformer (Yang et al. 2023)", "RRN hard, 17 clues", 0.995),
     ("Recurrent Transformer", "SATNet easy split", 1.000),
 ]
+PARAMS = {"Recurrent Transformer (Yang et al. 2023)": "211k",
+          "RRN (Palm et al. NeurIPS 2018)": "201k",
+          "SATNet (Wang et al. ICML 2019)": "618k"}
 
 
 def units():
@@ -141,6 +144,7 @@ def backtrack_cost(grid):
 p = argparse.ArgumentParser()
 p.add_argument("--hard", default="data/sudoku_hard")
 p.add_argument("--runs", default="runs")
+p.add_argument("--pattern", default="sudh-*")
 p.add_argument("--eval_bs", type=int, default=200)
 p.add_argument("--out", default="figures/sudoku_compare.json")
 a = p.parse_args()
@@ -185,10 +189,12 @@ print("=" * 88)
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 tok = SudokuTokenizer()
 runs = defaultdict(list)
-for d in sorted(glob.glob(os.path.join(a.runs, "sudh-*"))):
+for d in sorted(glob.glob(os.path.join(a.runs, a.pattern))):
     if os.path.exists(os.path.join(d, "result.json")):
         r = json.load(open(os.path.join(d, "result.json")))
-        runs[r["args"]["mode"]].append((d, r))
+        tag = ("recurrent-" if r["args"].get("recurrent") else "feedforward-") \
+              + r["args"]["mode"]
+        runs[tag].append((d, r))
 
 if not runs:
     print("  (no trained models yet)")
@@ -199,8 +205,13 @@ else:
 
     def load(d):
         cfg = json.load(open(os.path.join(d, "result.json")))["args"]
-        m = Transformer(len(tok), cfg["d"], cfg["layers"], cfg["heads"], cfg["pe"],
-                        causal=False, max_len=CELLS + 8).to(dev)
+        if cfg.get("recurrent"):
+            m = RecurrentDenoiser(len(tok), cfg["d"], cfg["layers"], cfg["heads"],
+                                  cfg["pe"], max_len=CELLS + 8,
+                                  recurrences=cfg.get("R_infer") or cfg["R"]).to(dev)
+        else:
+            m = Transformer(len(tok), cfg["d"], cfg["layers"], cfg["heads"],
+                            cfg["pe"], causal=False, max_len=CELLS + 8).to(dev)
         m.load_state_dict(torch.load(os.path.join(d, "model.pt"), map_location=dev))
         m.eval()
         return m
@@ -218,7 +229,10 @@ else:
 
     res["diffusion"] = {}
     for mode, lst in sorted(runs.items()):
-        print(f"\n  mode={mode}  ({len(lst)} seeds)")
+        npar = json.load(open(os.path.join(lst[0][0], "result.json")))["args"]
+        print(f"\n  {mode}  ({len(lst)} seeds, d={npar['d']} layers={npar['layers']}"
+              + (f" R={npar.get('R')}→{npar.get('R_infer') or npar.get('R')}"
+                 if npar.get('recurrent') else "") + ")")
         print(f"    {'passes':>8}{'board':>10}{'vs propagation':>17}")
         per_pass = {}
         for K in (1, 4, 8, 16, 32, 61):
@@ -253,7 +267,8 @@ print("=" * 88)
 print("PUBLISHED NEURAL RESULTS — different puzzle distributions, NOT directly comparable")
 print("=" * 88)
 for name, dist, acc in PUBLISHED:
-    print(f"  {acc*100:6.1f}%   {name:<42} [{dist}]")
+    pm = PARAMS.get(name, "")
+    print(f"  {acc*100:6.1f}%   {name:<42} [{dist}]" + (f"  {pm} params" if pm else ""))
 print(f"\n  Our benchmark is {clues.min()}-{clues.max()} clues (mean {clues.mean():.1f}).")
 print("  The 17-clue RRN split is strictly harder than ours; the SATNet split,")
 print("  at ~36 clues, is strictly easier and is fully solved by propagation alone.")
