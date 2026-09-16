@@ -113,19 +113,33 @@ for d in dirs:
     print(f"    {'entropy-budget B=0.01':<34}{n:>8.1f}{b*100:>9.2f}%{c*100:>8.2f}%",
           flush=True)
 
-    for rounds in (2, 4, 8, 16):
-        b, c, n, _ = evaluate(m, lambda x, bl, r=rounds: dfn.verifier_remask_decode(
-            m, x, tok, dev, violation_mask, base_steps=16, rounds=r,
-            max_revisits=3, fillable=bl, expand_peers=expand_to_units))
-        row[f"verifier_r{rounds}"] = {"board": b, "cell": c, "nfe": n}
-        print(f"    {'VERIFIER remask, ' + str(rounds) + ' rounds':<34}"
-              f"{n:>8.1f}{b*100:>9.2f}%{c*100:>8.2f}%", flush=True)
+    # Repair must start from the STRONGEST available decode, not a weak one.
+    # An earlier version used base_steps=16, which decodes to ~83% before repair,
+    # so the repaired result never beat plain 61-pass decoding at ~88% - the
+    # method was handicapped by its starting point, not by the idea.
+    for base in (32, 61):
+        for rounds in (4, 8):
+            b, c, n, _ = evaluate(
+                m, lambda x, bl, r=rounds, bs=base: dfn.verifier_remask_decode(
+                    m, x, tok, dev, violation_mask, base_steps=bs, rounds=r,
+                    max_revisits=3, fillable=bl, expand_peers=expand_to_units))
+            row[f"verifier_b{base}_r{rounds}"] = {"board": b, "cell": c, "nfe": n}
+            print(f"    {'VERIFIER base=' + str(base) + ' rounds=' + str(rounds):<34}"
+                  f"{n:>8.1f}{b*100:>9.2f}%{c*100:>8.2f}%", flush=True)
+
+    # narrow repair: remask ONLY the conflicting cells, not their whole units
+    b, c, n, _ = evaluate(m, lambda x, bl: dfn.verifier_remask_decode(
+        m, x, tok, dev, violation_mask, base_steps=61, rounds=8,
+        max_revisits=3, fillable=bl, expand_peers=None))
+    row["verifier_narrow"] = {"board": b, "cell": c, "nfe": n}
+    print(f"    {'VERIFIER base=61 narrow (no units)':<34}{n:>8.1f}{b*100:>9.2f}%"
+          f"{c*100:>8.2f}%", flush=True)
 
     # control: same budget, but remask at random instead of where it is wrong
     b, c, n, _ = evaluate(m, lambda x, bl: dfn.verifier_remask_decode(
         m, x, tok, dev,
         lambda z: (torch.rand_like(z, dtype=torch.float) < 0.12),
-        base_steps=16, rounds=8, max_revisits=3, fillable=bl,
+        base_steps=61, rounds=8, max_revisits=3, fillable=bl,
         expand_peers=None))
     row["random_remask_control"] = {"board": b, "cell": c, "nfe": n}
     print(f"    {'CONTROL: random remask, 8 rounds':<34}{n:>8.1f}{b*100:>9.2f}%"

@@ -162,3 +162,74 @@ class Transformer(nn.Module):
 
     def n_params(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+class RecurrentDenoiser(nn.Module):
+    """A weight-shared block applied R times, supervised at every step.
+
+    Motivated by a measurement, not a hunch. On hard Sudoku a 37.86M-parameter
+    12-layer denoiser reaches 89.4%, while the Recurrent Transformer of Yang et
+    al. (2023) reaches 99.5% on a comparable split with 211k parameters - 180x
+    smaller. The difference is not capacity, it is that constraint propagation is
+    an ITERATIVE algorithm: solving a hard Sudoku takes tens of rounds of
+    "eliminate, propagate, repeat". A fixed 12-layer feedforward network cannot
+    express thirty rounds of propagation at any width; one block applied thirty
+    times can.
+
+    This is the same argument THEORY.md makes for addition - that a K-pass decode
+    has effective depth L*K and "borrows depth from the decoding loop" - applied
+    to the architecture instead of to the decoder.
+
+    Two details carry the method:
+
+      INPUT INJECTION. The token embedding is re-added at every recurrence.
+      Without it the input signal decays through thirty applications of the same
+      block and the model forgets the clues it is solving for.
+
+      DEEP SUPERVISION. Training loss is taken at EVERY recurrence, not only the
+      last. That forces each application to make progress on its own rather than
+      letting the stack learn one entangled thirty-step function, and it is what
+      lets inference run MORE recurrences than training - the per-step objective
+      is the same at every step, so the map is iterable beyond where it was fit.
+    """
+
+    def __init__(self, vocab, d=128, n_layers=1, n_heads=4, pe="ape",
+                 max_len=128, recurrences=32, hidden_mult=4):
+        super().__init__()
+        self.pe_kind, self.causal = pe, False
+        self.recurrences = recurrences
+        self.emb = nn.Embedding(vocab, d)
+        if pe == "ape":
+            self.pos = nn.Embedding(max_len, d)
+        elif pe == "sin":
+            self.register_buffer("pos_sin", sinusoidal(max_len, d), persistent=False)
+        self.blocks = nn.ModuleList([Block(d, n_heads, pe, False, max_len)
+                                     for _ in range(n_layers)])
+        self.norm = nn.LayerNorm(d)
+        self.head = nn.Linear(d, vocab, bias=False)
+        self.apply(Transformer._init)
+
+    def _inject(self, idx):
+        x = self.emb(idx)
+        if self.pe_kind == "ape":
+            x = x + self.pos(torch.arange(idx.shape[1], device=idx.device))[None]
+        elif self.pe_kind == "sin":
+            x = x + self.pos_sin[torch.arange(idx.shape[1], device=idx.device)][None]
+        return x
+
+    def forward(self, idx, pad_mask=None, pos_ids=None, budget=None,
+                recurrences=None, return_all=False):
+        """Returns final logits, or the list of logits from every recurrence."""
+        R = recurrences or self.recurrences
+        inp = self._inject(idx)
+        h = inp
+        outs = []
+        for _ in range(R):
+            h = h + inp                      # input injection: keep the clues alive
+            for b in self.blocks:
+                h = b(h, pad_mask, pos_ids)
+            outs.append(self.head(self.norm(h)))
+        return outs if return_all else outs[-1]
+
+    def n_params(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)

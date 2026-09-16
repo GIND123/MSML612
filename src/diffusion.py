@@ -868,3 +868,53 @@ def verifier_remask_decode(model, x, tok, device, violation_fn, base_steps=16,
                                allowed=allowed, temperature=temperature)
         nfe += n2
     return x, nfe
+
+
+def recurrent_cond_loss(model, x0, amask, tok, mode="mdlm", K=8, lam=1.0,
+                        recurrences=None):
+    """Conditional masked-diffusion loss with DEEP SUPERVISION over recurrences.
+
+    Loss is taken at every recurrence rather than only the last. That is the
+    ingredient Yang et al. (2023) identify as critical for constraint
+    satisfaction: it forces every application of the shared block to be a valid
+    one-step refinement, which in turn is what lets inference run more
+    recurrences than training.
+
+    Later recurrences are weighted more heavily - a linear ramp - so the final
+    output still receives the strongest signal while the early ones are kept
+    honest.
+    """
+    B, L = x0.shape
+    dev = x0.device
+    if mode == "matched" or mode == "full":
+        t = torch.randint(1, K + 1, (B,), device=dev).float() / K
+    else:
+        t = torch.rand(B, device=dev).clamp_min(1.0 / L)
+
+    m = _cond_mask(x0, amask, tok, t)
+    xt = torch.where(m, torch.full_like(x0, tok.mask), x0)
+    outs = model(xt, recurrences=recurrences, return_all=True)
+
+    R = len(outs)
+    total, wsum = 0.0, 0.0
+    for r, logits in enumerate(outs):
+        w = (r + 1) / R                      # ramp: later steps matter more
+        ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)),
+                             x0.reshape(-1), reduction="none").view(B, L)
+        total = total + w * ((ce * m).sum(1) / m.sum(1).clamp_min(1)).mean()
+        wsum += w
+    loss = total / wsum
+
+    if mode == "full":
+        # the t=1 term, also deep-supervised
+        xf = torch.where(amask, torch.full_like(x0, tok.mask), x0)
+        outs_f = model(xf, recurrences=recurrences, return_all=True)
+        tot_f, ws = 0.0, 0.0
+        for r, logits in enumerate(outs_f):
+            w = (r + 1) / R
+            ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)),
+                                 x0.reshape(-1), reduction="none").view(B, L)
+            tot_f = tot_f + w * ((ce * amask).sum(1) / amask.sum(1).clamp_min(1)).mean()
+            ws += w
+        loss = loss + lam * tot_f / ws
+    return loss

@@ -21,7 +21,7 @@ import argparse, json, math, os, time
 import numpy as np
 import torch
 
-from model import Transformer
+from model import RecurrentDenoiser, Transformer
 import diffusion as dfn
 from sudoku import (CELLS, SudokuTokenizer, board_accuracy, cell_accuracy,
                     consistent_with_clues, is_valid_solution, load_satnet, split)
@@ -33,6 +33,11 @@ def get_args():
     p.add_argument("--K", type=int, default=8)
     p.add_argument("--lam", type=float, default=1.0)
     p.add_argument("--pe", default="ape", choices=["ape", "rope", "sin"])
+    p.add_argument("--recurrent", action="store_true",
+                   help="weight-shared block applied R times with deep supervision")
+    p.add_argument("--R", type=int, default=32, help="training recurrences")
+    p.add_argument("--R_infer", type=int, default=0,
+                   help="inference recurrences (0 = same as training)")
     p.add_argument("--root", default="data/sudoku")
     p.add_argument("--hard", default="",
                    help="directory of the generated HARD benchmark (npy files); "
@@ -83,9 +88,15 @@ blank_tr = torch.from_numpy(Xtr == 0)
 sol_te = torch.from_numpy(Yte - 1)
 blank_te = torch.from_numpy(Xte == 0)
 
-model = Transformer(len(tok), a.d, a.layers, a.heads, a.pe, causal=False,
-                    max_len=CELLS + 8).to(dev)
-print(f"params {model.n_params()/1e6:.2f}M  mode={a.mode} pe={a.pe}", flush=True)
+if a.recurrent:
+    model = RecurrentDenoiser(len(tok), a.d, a.layers, a.heads, a.pe,
+                              max_len=CELLS + 8, recurrences=a.R).to(dev)
+    print(f"params {model.n_params()/1e3:.0f}k  RECURRENT R={a.R} "
+          f"layers={a.layers} d={a.d} mode={a.mode} pe={a.pe}", flush=True)
+else:
+    model = Transformer(len(tok), a.d, a.layers, a.heads, a.pe, causal=False,
+                        max_len=CELLS + 8).to(dev)
+    print(f"params {model.n_params()/1e6:.2f}M  mode={a.mode} pe={a.pe}", flush=True)
 
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
 sched = torch.optim.lr_scheduler.LambdaLR(
@@ -133,7 +144,10 @@ for step in range(start_step, a.steps):
     xb, ab = xb.to(dev), ab.to(dev)
     opt.zero_grad(set_to_none=True)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=(dev == "cuda")):
-        loss = dfn.pmd_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
+        if a.recurrent:
+            loss = dfn.recurrent_cond_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
+        else:
+            loss = dfn.pmd_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     opt.step(); sched.step()
@@ -144,6 +158,9 @@ for step in range(start_step, a.steps):
 save_ckpt(a.steps)
 
 model.eval()
+if a.recurrent and a.R_infer:
+    model.recurrences = a.R_infer
+    print(f"inference recurrences set to {a.R_infer} (trained with {a.R})", flush=True)
 res = {"args": vars(a), "decode": {}}
 
 
