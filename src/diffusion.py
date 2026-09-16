@@ -871,7 +871,7 @@ def verifier_remask_decode(model, x, tok, device, violation_fn, base_steps=16,
 
 
 def recurrent_cond_loss(model, x0, amask, tok, mode="mdlm", K=8, lam=1.0,
-                        recurrences=None):
+                        recurrences=None, deep_sup=True):
     """Conditional masked-diffusion loss with DEEP SUPERVISION over recurrences.
 
     Loss is taken at every recurrence rather than only the last. That is the
@@ -896,9 +896,11 @@ def recurrent_cond_loss(model, x0, amask, tok, mode="mdlm", K=8, lam=1.0,
     outs = model(xt, recurrences=recurrences, return_all=True)
 
     R = len(outs)
+    if not deep_sup:
+        outs = outs[-1:]                     # ablation: supervise only the last
     total, wsum = 0.0, 0.0
     for r, logits in enumerate(outs):
-        w = (r + 1) / R                      # ramp: later steps matter more
+        w = (r + 1) / len(outs) if deep_sup else 1.0
         ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)),
                              x0.reshape(-1), reduction="none").view(B, L)
         total = total + w * ((ce * m).sum(1) / m.sum(1).clamp_min(1)).mean()
@@ -909,9 +911,11 @@ def recurrent_cond_loss(model, x0, amask, tok, mode="mdlm", K=8, lam=1.0,
         # the t=1 term, also deep-supervised
         xf = torch.where(amask, torch.full_like(x0, tok.mask), x0)
         outs_f = model(xf, recurrences=recurrences, return_all=True)
+        if not deep_sup:
+            outs_f = outs_f[-1:]
         tot_f, ws = 0.0, 0.0
         for r, logits in enumerate(outs_f):
-            w = (r + 1) / R
+            w = (r + 1) / len(outs_f) if deep_sup else 1.0
             ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)),
                                  x0.reshape(-1), reduction="none").view(B, L)
             tot_f = tot_f + w * ((ce * amask).sum(1) / amask.sum(1).clamp_min(1)).mean()

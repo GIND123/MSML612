@@ -30,12 +30,28 @@ from sudoku import (CELLS, SudokuTokenizer, board_accuracy, cell_accuracy,
 def get_args():
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["mdlm", "matched", "full"], default="mdlm")
+    p.add_argument("--all_cells", action="store_true",
+                   help="direct objective: supervise all 81 cells, not only the "
+                        "blanks. Denser signal - the model must also reproduce "
+                        "the given clues - which is how the published recurrent "
+                        "classifier is trained and the most likely reason our "
+                        "first attempt plateaued at loss 0.34 against 0.15")
+    p.add_argument("--objective", choices=["diffusion", "direct", "ar"],
+                   default="diffusion",
+                   help="diffusion = mask at a random ratio and denoise; "
+                        "direct = predict every blank from the puzzle with no "
+                        "masking schedule, which is the Recurrent Transformer "
+                        "setup and the baseline that asks whether the diffusion "
+                        "framing earns its place; "
+                        "ar = autoregressive, blanks filled left to right")
     p.add_argument("--K", type=int, default=8)
     p.add_argument("--lam", type=float, default=1.0)
     p.add_argument("--pe", default="ape", choices=["ape", "rope", "sin"])
     p.add_argument("--recurrent", action="store_true",
                    help="weight-shared block applied R times with deep supervision")
     p.add_argument("--R", type=int, default=32, help="training recurrences")
+    p.add_argument("--no_deep_sup", action="store_true",
+                   help="ablation: supervise only the final recurrence")
     p.add_argument("--R_infer", type=int, default=0,
                    help="inference recurrences (0 = same as training)")
     p.add_argument("--root", default="data/sudoku")
@@ -94,8 +110,10 @@ if a.recurrent:
     print(f"params {model.n_params()/1e3:.0f}k  RECURRENT R={a.R} "
           f"layers={a.layers} d={a.d} mode={a.mode} pe={a.pe}", flush=True)
 else:
-    model = Transformer(len(tok), a.d, a.layers, a.heads, a.pe, causal=False,
-                        max_len=CELLS + 8).to(dev)
+    model = Transformer(len(tok), a.d, a.layers, a.heads, a.pe,
+                        causal=(a.objective == "ar"),
+                        max_len=(2 * CELLS + 8 if a.objective == "ar"
+                                 else CELLS + 8)).to(dev)
     print(f"params {model.n_params()/1e6:.2f}M  mode={a.mode} pe={a.pe}", flush=True)
 
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
@@ -144,8 +162,51 @@ for step in range(start_step, a.steps):
     xb, ab = xb.to(dev), ab.to(dev)
     opt.zero_grad(set_to_none=True)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=(dev == "cuda")):
-        if a.recurrent:
-            loss = dfn.recurrent_cond_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
+        if a.objective == "direct":
+            # No masking schedule at all: the model always sees the real puzzle
+            # and predicts every blank. This is what a recurrent classifier does,
+            # and it is the control for whether diffusion adds anything.
+            xin = torch.where(ab, torch.full_like(xb, tok.mask), xb)
+            sup = torch.ones_like(ab) if a.all_cells else ab
+            if a.recurrent:
+                outs = model(xin, recurrences=None, return_all=True)
+                if a.no_deep_sup:
+                    outs = outs[-1:]
+                R = len(outs)
+                loss, wsum = 0.0, 0.0
+                for r, lg in enumerate(outs):
+                    w = (r + 1) / R
+                    ce = torch.nn.functional.cross_entropy(
+                        lg.reshape(-1, lg.size(-1)), xb.reshape(-1),
+                        reduction="none").view(xb.shape)
+                    loss = loss + w * ((ce * sup).sum(1) / sup.sum(1).clamp_min(1)).mean()
+                    wsum += w
+                loss = loss / wsum
+            else:
+                lg = model(xin)
+                ce = torch.nn.functional.cross_entropy(
+                    lg.reshape(-1, lg.size(-1)), xb.reshape(-1),
+                    reduction="none").view(xb.shape)
+                loss = ((ce * sup).sum(1) / sup.sum(1).clamp_min(1)).mean()
+        elif a.objective == "ar":
+            # Prefix-LM: [puzzle 81 tokens][solution 81 tokens], causal, loss on
+            # the solution half only. Sudoku clues are scattered, so an in-place
+            # causal model cannot see clues to its right; giving it the whole
+            # puzzle as a prefix is the setup that actually makes AR competitive.
+            puz = torch.where(ab, torch.full_like(xb, tok.mask), xb)
+            seq = torch.cat([puz, xb], dim=1)                 # (B, 162)
+            lg = model(seq)
+            tgt = seq[:, 1:]
+            lgt = lg[:, :-1]
+            sup = torch.zeros_like(tgt, dtype=torch.bool)
+            sup[:, CELLS - 1:] = True                         # solution half only
+            ce = torch.nn.functional.cross_entropy(
+                lgt.reshape(-1, lg.size(-1)), tgt.reshape(-1),
+                reduction="none").view(tgt.shape)
+            loss = ((ce * sup).sum(1) / sup.sum(1)).mean()
+        elif a.recurrent:
+            loss = dfn.recurrent_cond_loss(model, xb, ab, tok, a.mode, a.K, a.lam,
+                                           deep_sup=not a.no_deep_sup)
         else:
             loss = dfn.pmd_loss(model, xb, ab, tok, a.mode, a.K, a.lam)
     loss.backward()
@@ -189,6 +250,23 @@ def report(tag, key, r):
     print(f"  {tag:<26}{r['nfe']:>7.1f}{r['board']*100:>10.2f}%{r['cell']*100:>9.2f}%"
           f"{r['valid_sudoku']*100:>9.2f}%", flush=True)
 
+
+if a.objective == "ar":
+    @torch.no_grad()
+    def ar_decode(x, bl):
+        """Generate the solution half token by token, conditioned on the puzzle."""
+        puz = x                                    # already puzzle-with-masks
+        seq = torch.cat([puz, torch.full_like(puz, tok.mask)], dim=1)
+        for j in range(CELLS):
+            pos = CELLS + j
+            lg = model(seq[:, :pos])[:, -1]
+            seq[:, pos] = lg.argmax(-1)
+        return seq[:, CELLS:], CELLS
+    report("autoregressive (L->R)", "ar", evaluate(ar_decode))
+    torch.save(model.state_dict(), os.path.join(a.out, "model.pt"))
+    json.dump(res, open(os.path.join(a.out, "result.json"), "w"), indent=2)
+    print(f"saved to {a.out}", flush=True)
+    raise SystemExit
 
 print("\n=== board accuracy against decoding budget ===", flush=True)
 print(f"  {'rule':<26}{'NFE':>7}{'BOARD':>10}{'cell':>9}{'valid':>9}", flush=True)
