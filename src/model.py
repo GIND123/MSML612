@@ -194,10 +194,15 @@ class RecurrentDenoiser(nn.Module):
     """
 
     def __init__(self, vocab, d=128, n_layers=1, n_heads=4, pe="ape",
-                 max_len=128, recurrences=32, hidden_mult=4):
+                 max_len=128, recurrences=32, hidden_mult=4, inject=True):
         super().__init__()
         self.pe_kind, self.causal = pe, False
         self.recurrences = recurrences
+        # `inject` exists to separate two things the headline comparison
+        # otherwise conflates: weight sharing, and re-supplying the input at
+        # every application. Turning it off keeps the architecture and the depth
+        # identical and changes only the injection, which is the clean isolation.
+        self.inject = inject
         self.emb = nn.Embedding(vocab, d)
         if pe == "ape":
             self.pos = nn.Embedding(max_len, d)
@@ -225,7 +230,8 @@ class RecurrentDenoiser(nn.Module):
         h = inp
         outs = []
         for _ in range(R):
-            h = h + inp                      # input injection: keep the clues alive
+            if self.inject:
+                h = h + inp                  # input injection: keep the clues alive
             for b in self.blocks:
                 h = b(h, pad_mask, pos_ids)
             outs.append(self.head(self.norm(h)))

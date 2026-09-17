@@ -3,120 +3,85 @@ license: apache-2.0
 tags:
   - masked-diffusion
   - discrete-diffusion
-  - parallel-decoding
   - constraint-satisfaction
-  - text8
-  - qm9
   - sudoku
+  - recurrent-transformer
   - from-scratch
 ---
 
-# Two Failure Modes of Parallel Decoding in Masked Diffusion
+# Recurrent Masked Diffusion for Constraint Satisfaction
 
-Everything here is trained from scratch: no pretrained weights, no pretrained
-tokenizer, and the autoregressive model used to score generated text is itself
-trained from scratch on the same corpus.
+**Constraint propagation is an iterative algorithm; masked diffusion models are
+trained as fixed-depth denoisers. Making the denoiser recurrent — one
+weight-shared block applied many times, supervised at every application —
+reaches 99.70% on hard Sudoku with 212k parameters, where a 37.9M-parameter
+feed-forward denoiser reaches 88.90%.**
+
+Trained from scratch. No pretrained weights, no pretrained tokenizer.
 
 Code: https://github.com/GIND123/MSML612
 
----
+## Benchmark
 
-## The claim
+1,000 held-out minimal Sudoku puzzles, 20–30 clues (mean 24.4). Uniqueness
+verified after **every** cell removal; train/test solutions disjoint even up to
+digit relabelling. Metric: board accuracy, all 81 cells correct.
 
-Parallel decoding in masked diffusion loses accuracy for two reasons that need
-**opposite** fixes, and the literature treats them as one.
+## Results
 
-| | failure mode | fixable by |
-|---|---|---|
-| **(i)** | the fully-masked state is never trained — a *K*-pass decode starts at `t = 1`, and continuous `t ~ U(0,1)` assigns that state probability **zero** | **training only** |
-| **(ii)** | committed positions carry real mutual information — parallel decoding samples the product of marginals when the truth is the joint | **inference only** |
+| method | params | 1 pass | best |
+|---|---|---|---|
+| constraint propagation (no search) | – | – | 3.00% |
+| greedy MRV | – | – | 5.90% |
+| autoregressive prefix-LM | 2.4M | – | 0.30% |
+| direct recurrent classifier* | 212k | 10.5% | 31.00% |
+| feed-forward diffusion, MDLM | 37.9M | 4.40% | 88.15% |
+| feed-forward diffusion, schedule-matched | 37.9M | 40.10% | 88.90% |
+| 32 distinct layers, no weight sharing | 6.34M | 70.20% | 94.50% |
+| recurrent diffusion, MDLM | 212k | 87.35% | 96.55% |
+| recurrent, no deep supervision | 212k | 93.35% | 97.75% |
+| **recurrent diffusion, full method** | **212k** | **97.35%** | **99.70%** |
+| full backtracking search | – | – | 100% (423 nodes) |
 
-Prior work applies inference-time fixes to both, which is why those methods
-flatline on arithmetic, where (ii) is identically zero.
+\* Our reimplementation of the published recurrent classifier reaches 31%
+against their reported 99.5%. **That is a failed reproduction on our side, not
+evidence against their method**, and it is not used as a comparison.
 
-## The bound
+## Ablations
 
-For a data distribution `P` uniform on a family `F`, let `V*` be the one-pass
-validity achievable from the **true** marginals. Then
-
-```
-V*  ≥  2^(−TC),     TC = D_KL( P ‖ ∏ᵢ pᵢ ),   equality iff ∏ᵢ pᵢ is constant on F
-```
-
-**Every bit of total correlation among jointly committed variables at most halves
-the one-pass success probability.**
-
-Verified by exhaustive enumeration over graph families, with the enumerator itself
-checked against Cayley's formula (spanning trees at n = 5, 6, 7 → 125, 1296,
-16807):
-
-| family | TC (bits) | V* | 2^(−TC) | ratio |
-|---|---|---|---|---|
-| bipartite (n=7) | 0.026 | 98.2816% | 98.1817% | 1.001 |
-| tree (n=6) | 3.435 | **9.2488%** | **9.2488%** | **1.00000** |
-| matching (n=6) | 6.922 | **0.8246%** | **0.8246%** | **1.00000** |
-| 2-regular (n=7) | 10.423 | **0.0728%** | **0.0728%** | **1.00000** |
-
-The inequality holds in every case; equality holds to five decimals on exactly
-the fixed-edge-count families, and fails precisely where edge counts vary — which
-is what the Jensen step requires.
-
-## Finding 1 — train the schedule you intend to decode at
-
-| task | baseline | ours |
-|---|---|---|
-| 20-digit addition, 1 pass | **0.00%** (also 0.00% at **2× compute**, both seeds) | **99.9%** (3/3 seeds) |
-| text8, NFE 16 | 116.88 gen-ppl | **92.74** (−20.7%) |
-| text8, validation BPC | 1.7292 | **1.7010** |
-
-The text8 gain appears in generative quality **and** likelihood simultaneously,
-so it is not bought by trading one for the other.
-
-A 48-run ablation isolates the mechanism: the `t = 1` term alone removes **49%**
-of the parallelism penalty, against 17% for reshaping the rest of the schedule.
-
-## Finding 2 — one-pass decoding needs absolute position information
-
-At `t = 1` every input token is `[MASK]`, so the sequence is constant. With a
-relative encoding the attention score depends only on `(i − j)`, and identical
-value vectors give identical outputs at every position. **Position-dependent
-marginals are inexpressible at any training budget.**
-
-| condition | learned (APE) | parameter-free (sinusoidal) |
-|---|---|---|
-| marginals **vary** | **+88.037 pts** | **+88.074 pts** |
-| marginals **constant** (control) | **−0.024 pts** | **+0.000 pts** |
-
-A ~3,700× dissociation. The parameter-free variant matching the learned one rules
-out capacity; the control rules out "absolute is simply better". Predicted 5/5
-before measurement, and the treated arm lands at **100.3% of `V*`** — at the
-bound, not merely higher.
-
-## Benchmark: SATNet Sudoku
-
-9x9 Sudoku, SATNet's conventional 9,000/1,000 split, **board accuracy** = all 81
-cells correct. Published number: **98.3%** (Wang et al., ICML 2019).
-
-Un-augmented arm, which is the only like-for-like comparison:
-
-| denoising passes | board accuracy |
+| ingredient | gain |
 |---|---|
-| **1** | **87.85%** |
-| **2** | **98.65%** |
-| 8 | 99.70% |
-| **32** | **100.00%** |
+| recurrence vs feed-forward | +10.80 |
+| weight sharing vs 32 distinct layers (matched depth) | +3.75 |
+| schedule matching | +3.15 |
+| deep supervision | +1.95 |
 
-Two passes exceed the published number; 32 passes solve **all 1,000** test
-puzzles exactly. One pass — the entire grid committed at once — solves 87.85%.
+## Recurrence extrapolates past its training depth
 
-Leakage audited first: 0/1000 test puzzles in training, 0/1000 test solutions in
-training, and 0/1000 test solutions matching a training solution even up to digit
-relabelling. All 10,000 solutions are distinct.
+Trained at R = 32, evaluated elsewhere without retraining:
 
-**Scoped honestly:** this comes from the *plain MDLM baseline* with fixed-`K`
-decoding. Neither finding above contributes — the standard formulation already
-saturates this benchmark. It is a result for masked diffusion on SATNet Sudoku,
-not evidence for our method.
+| R | 1 | 4 | 8 | 16 | **32** | **64** | 128 |
+|---|---|---|---|---|---|---|---|
+| board | 0.10% | 48.40% | 82.00% | 92.40% | **98.30%** | **99.40%** | 99.10% / 39.70% |
+
+2× extrapolation is reliable; 4× collapses on one seed.
+
+## The instructive failure
+
+Both non-diffusion baselines reach **lower training loss** than our method and
+solve almost nothing — AR at 0.0486 loss gives 0.30% boards, direct all-cell
+supervision at 0.0722 gives 55%. AR's errors compound unrecoverably; all-cell
+supervision is dominated by copying the given clues. Low loss, no capability.
+
+## Honest limits
+
+- Published comparison is across **different puzzle distributions**: our 20–30
+  clue range sits inside the Recurrent Transformer's 17–34 but excludes the
+  hardest 17-clue instances, so 99.70% at 212k reads as *competitive with* their
+  99.5% at 211k, not better.
+- **Input injection is not separated from weight sharing** in the 32-layer
+  comparison; the isolating run is in progress.
+- The SATNet split is not used: constraint propagation alone solves 100% of it.
 
 ## Negative results, reported
 

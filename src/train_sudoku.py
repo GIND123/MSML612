@@ -50,6 +50,10 @@ def get_args():
     p.add_argument("--recurrent", action="store_true",
                    help="weight-shared block applied R times with deep supervision")
     p.add_argument("--R", type=int, default=32, help="training recurrences")
+    p.add_argument("--no_inject", action="store_true",
+                   help="ablation: drop input injection, keeping architecture and "
+                        "depth identical. Isolates weight sharing from injection, "
+                        "which the 32-layer comparison conflates")
     p.add_argument("--no_deep_sup", action="store_true",
                    help="ablation: supervise only the final recurrence")
     p.add_argument("--R_infer", type=int, default=0,
@@ -106,7 +110,8 @@ blank_te = torch.from_numpy(Xte == 0)
 
 if a.recurrent:
     model = RecurrentDenoiser(len(tok), a.d, a.layers, a.heads, a.pe,
-                              max_len=CELLS + 8, recurrences=a.R).to(dev)
+                              max_len=CELLS + 8, recurrences=a.R,
+                              inject=not a.no_inject).to(dev)
     print(f"params {model.n_params()/1e3:.0f}k  RECURRENT R={a.R} "
           f"layers={a.layers} d={a.d} mode={a.mode} pe={a.pe}", flush=True)
 else:
