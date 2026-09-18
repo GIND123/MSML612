@@ -44,25 +44,25 @@ randomised backtracking fill of an empty grid, reaching the full ≈6.7×10²¹ 
 
 ![passes](figures/sud_fig1_passes.png)
 
-| method | params | 1 pass | 8 | 16 | 61 | best |
-|---|---|---|---|---|---|---|
-| constraint propagation (no search) | – | – | – | – | – | **3.00%** |
-| greedy MRV, one sweep | – | – | – | – | – | 5.90% |
-| autoregressive prefix-LM | 2.4M | – | – | – | – | 0.15% |
-| direct recurrent classifier ¹ | 212k | 10.5% | – | – | – | 31.00% |
-| feed-forward diffusion, MDLM | 37.9M | 4.40% | 78.30% | 84.30% | 87.40% | 88.15% |
-| feed-forward diffusion, schedule-matched | 37.9M | 40.10% | 84.45% | 85.50% | 89.40% | 88.90% |
-| feed-forward, 32 distinct layers | 6.34M | 70.20% | – | – | – | 94.50% |
-| recurrent diffusion, MDLM | 212k | 87.35% | 93.35% | 94.45% | 95.30% | 96.55% |
-| recurrent, no deep supervision | 212k | 93.35% | – | – | – | 97.75% |
-| **recurrent diffusion, full method** | **212k** | **97.35%** | **98.85%** | **99.20%** | **99.60%** | **99.70%** |
-| full backtracking search | – | – | – | – | – | 100% (423 nodes mean) |
+| method | params | 1 pass | best | n | per-seed |
+|---|---|---|---|---|---|
+| constraint propagation (no search) | – | – | **3.00%** | – | measured |
+| greedy MRV, one sweep | – | – | 5.90% | – | measured |
+| autoregressive prefix-LM ¹ | 2.4M | – | 0.15% | 2 | 0.3, 0.0 |
+| direct recurrent classifier ¹ | 212k | 10.5% | 31.00% | 4 | 6.6, 21.4, 40.9, 55.1 |
+| feed-forward diffusion, MDLM | 37.9M | 4.40% | 88.15% | 2 | 89.0, 87.3 |
+| feed-forward diffusion, schedule-matched | 37.9M | 40.10% | 88.90% | 2 | 88.3, 89.5 |
+| feed-forward, **32 distinct layers** | 6.34M | 70.20% | 88.95% | 2 | 94.5, 83.4 |
+| recurrent, **no input injection** | 212k | – | 94.10% | 2 | 93.0, 95.2 |
+| recurrent diffusion, MDLM | 212k | 87.35% | 96.55% | 2 | 97.1, 96.0 |
+| recurrent, **no deep supervision** | 212k | 93.35% | 97.75% | 2 | 97.3, 98.2 |
+| **recurrent diffusion, full method** | **212k** | **97.35%** | **99.70%** | 2 | 99.6, 99.8 |
+| full backtracking search | – | – | 100% | – | 423 nodes mean |
 
-Two seeds per row. Headline: 99.60 / 99.80 at best, 97.4 / 97.3 at one pass.
-
-¹ Our reimplementation of the published recurrent classifier reaches 31% against
-their reported 99.5%. **That is a failed reproduction on our side, not evidence
-against their method**, and it is not used as a comparison.
+¹ Both are **our reimplementations of other people's methods, and both failed to
+reproduce their published results** — the recurrent classifier reaches 31%
+against a reported 99.5%. These are reported as our implementation failing, **not
+as comparisons we won**, and they are excluded from the margin table below.
 
 ### Margin over every measured baseline
 
@@ -92,16 +92,38 @@ more parameters** than the recurrent model and scores **10.8 points worse**.
 Solving a hard Sudoku takes tens of rounds of eliminate-propagate-repeat, and a
 fixed 12-layer network cannot express thirty rounds at any width.
 
-## 4. Ablation — every ingredient is load-bearing
+## 4. Ablation — what each ingredient is worth
 
 ![ablation](figures/sud_fig4_ablation.png)
 
-| ingredient | comparison | gain |
+Built as a ladder, each step changing exactly one thing:
+
+| step | configuration | board | gain |
+|---|---|---|---|
+| baseline | feed-forward, 12 layers, 37.9M params | 88.90% | – |
+| + depth | feed-forward, **32 layers**, 6.34M params | 88.95% | **+0.05** |
+| + weight sharing | recurrent, injection **off**, 212k | 94.10% | **+5.15** |
+| + input injection | recurrent, injection **on** | 99.70% | **+5.60** |
+
+**Depth alone is worth nothing.** Going from 12 to 32 layers gains 0.05 points.
+Sharing one block across 32 applications gains 5.15 at **30× fewer parameters**,
+and re-supplying the input at every application gains a further 5.60.
+
+The weight-sharing comparison is clean: input injection is held **off on both
+sides**, so the two effects are separated rather than confounded. An earlier
+version of this table quoted +3.75 for weight sharing from a comparison that
+conflated the two; that figure was wrong and is superseded.
+
+Two further ablations on the full method:
+
+| ingredient removed | board | cost |
 |---|---|---|
-| recurrence | 99.70 vs 88.90 (feed-forward, same objective) | **+10.80** |
-| weight sharing | 98.25 vs 94.50 (**at matched depth R=32**) | **+3.75** |
-| schedule matching | 99.70 vs 96.55 (recurrent MDLM) | **+3.15** |
-| deep supervision | 99.70 vs 97.75 | **+1.95** |
+| deep supervision (supervise only the last recurrence) | 97.75% | **−1.95** |
+| schedule matching (plain MDLM objective) | 96.55% | **−3.15** |
+
+Note the variance: the 32-layer row is **94.5 / 83.4** (sd 5.55), by far the
+least stable configuration tested. The full method is the most stable at
+**99.6 / 99.8** (sd 0.10).
 
 ## 5. Recurrence extrapolates past its training depth
 
@@ -118,6 +140,27 @@ supervision predicts: each application is a valid one-step refinement, so the ma
 is iterable beyond where it was fit. Honest limit — **2× extrapolation is
 reliable, 4× is not**: one seed holds 99.10% at R = 128, the other collapses to
 39.70%.
+
+## 5b. The model solving, and why the benchmark was rebuilt
+
+![grids](figures/sud_fig5_grids.png)
+
+Real model output on the three hardest held-out puzzles, at 1, 4, 16 and 61
+denoising passes. Grey cells are given clues, red cells are wrong.
+
+![recurrence](figures/sud_fig6_recurrence.png)
+
+The same board as the shared block is applied more times. This is the iterative
+refinement the method is built around, made visible rather than asserted.
+
+![difficulty](figures/sud_fig7_difficulty.png)
+
+Accuracy against puzzle difficulty, with sample size per point.
+
+![saturation](figures/sud_fig8_saturation.png)
+
+Why the benchmark was generated rather than downloaded: search-free constraint
+propagation solves **100%** of the standard SATNet split and **3%** of ours.
 
 ## 6. The instructive failure: low loss, no capability
 
@@ -173,12 +216,14 @@ not used because constraint propagation alone solves 100% of it.
 ## 9. Limitations
 
 - **Distribution mismatch** with all published numbers (§8). Not a SOTA claim.
-- **Input injection is not fully separated from weight sharing.** The 32-layer
-  comparison differs in both; the isolating run (`--no_inject`, identical
-  architecture and depth) is in progress.
+- ~~Input injection is not separated from weight sharing.~~ **Closed**: the
+  isolating run (identical architecture and depth, injection off) gives 94.10%,
+  so injection is worth +5.60 and weight sharing +5.15 with injection held off
+  on both sides.
 - **The direct-classifier reproduction failed** (31% vs 99.5% published). Not
   used as evidence; reported so the gap is visible.
-- `feed-forward 32L` is **n = 1**; a second seed is running.
+- `feed-forward 32L` is now n = 2 but highly unstable (94.5 / 83.4, sd 5.55).
+  Its mean of 88.95% should be read with that spread in mind.
 - Sudoku only. Whether recurrence transfers to other constraint families is
   untested here.
 
