@@ -35,6 +35,7 @@ digit relabelling. Metric: board accuracy, all 81 cells correct.
 | greedy MRV | – | – | 5.90% |
 | autoregressive prefix-LM | 2.4M | – | 0.30% |
 | direct recurrent classifier* | 212k | 10.5% | 31.00% |
+| recurrent, no input injection | 212k | – | 94.10% |
 | feed-forward diffusion, MDLM | 37.9M | 4.40% | 88.15% |
 | feed-forward diffusion, schedule-matched | 37.9M | 40.10% | 88.90% |
 | 32 distinct layers, no weight sharing | 6.34M | 70.20% | 94.50% |
@@ -49,12 +50,23 @@ evidence against their method**, and it is not used as a comparison.
 
 ## Ablations
 
-| ingredient | gain |
-|---|---|
-| recurrence vs feed-forward | +10.80 |
-| weight sharing vs 32 distinct layers (matched depth) | +3.75 |
-| schedule matching | +3.15 |
-| deep supervision | +1.95 |
+Built as a ladder, each step changing exactly one thing:
+
+| step | board | gain |
+|---|---|---|
+| feed-forward, 12 layers, 37.9M | 88.90% | – |
+| feed-forward, **32 layers**, 6.34M | 88.95% | **+0.05** |
+| + weight sharing (injection **off**), 212k | 94.10% | **+5.15** |
+| + input injection | **99.70%** | **+5.60** |
+
+**Depth alone is worth nothing** — 12→32 layers gains 0.05 points. Sharing one
+block across 32 applications gains 5.15 at 30× fewer parameters; re-supplying the
+input each application gains a further 5.60. The weight-sharing comparison holds
+injection **off on both sides**, so the effects are separated rather than
+confounded.
+
+Removing either from the full method: deep supervision **−1.95**, schedule
+matching **−3.15**.
 
 ## Recurrence extrapolates past its training depth
 
