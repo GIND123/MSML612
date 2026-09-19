@@ -1,20 +1,36 @@
-# Recurrent Masked Diffusion for Sudoku Constraint Satisfaction
+# Input Injection and Classical Baselines for Recursive Masked Diffusion on Sudoku
 
-**Constraint propagation is an iterative algorithm; masked diffusion models are
-trained as fixed-depth denoisers. Making the denoiser recurrent — one
-weight-shared block applied many times, supervised at every application —
-reaches 99.70% board accuracy on hard Sudoku with 212k parameters, where a
-37.9M-parameter feed-forward denoiser reaches 88.90%.**
+**Recursive Masked Diffusion Models (R-MDMs) — a weight-shared block applied
+repeatedly inside each denoising step, trained with loss at every loop — are an
+established architecture ([arXiv:2606.18022](https://arxiv.org/html/2606.18022v1)).
+This work reproduces that result independently, adds an architectural component
+they do not use (**input injection**, worth +5.60 points), and evaluates against
+**classical solvers**, which prior work omits.**
 
-Trained entirely from scratch: no pretrained weights, no pretrained tokenizer.
+Trained from scratch. No pretrained weights, no pretrained tokenizer.
 
-> **Scope of the claim.** The *mechanism* — weight-shared recurrence with deep
-> supervision inside a masked diffusion model — is novel: the Recurrent
-> Transformer is not a diffusion model, and diffusion work does not use
-> recurrence. The *result* is **competitive with, not superior to**, published
-> specialised solvers: 99.70% on 20–30 clue puzzles against the Recurrent
-> Transformer's 99.5% on 17–34 clues, a range that includes strictly harder
-> instances. This is not a state-of-the-art claim.
+> ### Relation to prior work — read this first
+>
+> We arrived at the recursive architecture independently and only afterwards
+> identified [arXiv:2606.18022](https://arxiv.org/html/2606.18022v1), which
+> establishes it. **The core mechanism is theirs, not ours.** Specifically, they
+> already introduce: the weight-shared block applied recurrently within a
+> denoising step; deep supervision via an all-steps loss; recursion as a
+> substitute for parameter count; evaluation on Sudoku and text8; and
+> extrapolation to more loops at inference than training.
+>
+> **What this work adds, and nothing more:**
+>
+> | contribution | status |
+> |---|---|
+> | **Input injection** — re-adding the token embedding at every recursion. R-MDM passes information only through the hidden state and reports no such ablation. | **+5.60 points** — the largest single ingredient we measure |
+> | **Classical solver baselines** measured on our own test set | R-MDM compares only against neural baselines |
+> | **Minimal-puzzle benchmark** with uniqueness verified after every cell removal and leakage checked up to digit relabelling | R-MDM uses Shah et al. (2024), 1.8M boards, human-style masking |
+>
+> **We do not claim to beat R-MDM.** Our 99.70% at 212k parameters and their 95%
+> at 10.6M are measured on **different datasets**, and comparing them directly
+> would be invalid. A like-for-like comparison would require running on their
+> benchmark, which we have not done.
 
 ---
 
@@ -106,8 +122,10 @@ Built as a ladder, each step changing exactly one thing:
 | + input injection | recurrent, injection **on** | 99.70% | **+5.60** |
 
 **Depth alone is worth nothing.** Going from 12 to 32 layers gains 0.05 points.
-Sharing one block across 32 applications gains 5.15 at **30× fewer parameters**,
-and re-supplying the input at every application gains a further 5.60.
+Sharing one block across 32 applications gains 5.15 at **30× fewer parameters** —
+this reproduces R-MDM's central finding independently. Re-supplying the input at
+every application gains a further **5.60**, and that component is not present in
+R-MDM, which passes information only through the hidden state between loops.
 
 The weight-sharing comparison is clean: input injection is held **off on both
 sides**, so the two effects are separated rather than confounded. An earlier
@@ -215,6 +233,14 @@ not used because constraint propagation alone solves 100% of it.
 
 ## 9. Limitations
 
+- **The recursive architecture is not our contribution.** It is established in
+  [arXiv:2606.18022](https://arxiv.org/html/2606.18022v1). We reproduce it
+  independently and extend it with input injection; the framing throughout
+  reflects that.
+- **No like-for-like comparison with R-MDM.** They evaluate on Shah et al.
+  (2024); we generate our own minimal puzzles. The two numbers are not
+  comparable and we do not compare them.
+
 - **Distribution mismatch** with all published numbers (§8). Not a SOTA claim.
 - ~~Input injection is not separated from weight sharing.~~ **Closed**: the
   isolating run (identical architecture and depth, injection off) gives 94.10%,
@@ -265,6 +291,11 @@ autoregressive model used to score generated text in the earlier study.
 
 ## References
 
+- *Recursive Scaling in Masked Diffusion Models (R-MDM).*
+  [arXiv:2606.18022](https://arxiv.org/html/2606.18022v1) — **establishes the
+  recursive weight-shared architecture with all-steps loss that this work
+  reproduces.**
+- Shah et al., 2024 — the 1.8M-board Sudoku dataset R-MDM evaluates on.
 - Wang, Donti, Wilder, Kolter. *SATNet: Bridging deep learning and logical
   reasoning with a differentiable satisfiability solver.* ICML 2019.
 - Palm, Paquet, Winther. *Recurrent Relational Networks.* NeurIPS 2018.
