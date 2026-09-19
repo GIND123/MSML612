@@ -80,6 +80,28 @@ reproduce their published results** — the recurrent classifier reaches 31%
 against a reported 99.5%. These are reported as our implementation failing, **not
 as comparisons we won**, and they are excluded from the margin table below.
 
+### Comparison against the state of the art (R-MDM)
+
+The relevant SOTA is R-MDM ([arXiv:2606.18022](https://arxiv.org/html/2606.18022v1)).
+Because their benchmark differs from ours, we compare **architectures on our
+benchmark** rather than quoting their number against ours:
+
+| architecture | board accuracy | params |
+|---|---|---|
+| **R-MDM-style**: weight-shared block, deep supervision, **no input injection** | **94.10%** | 212k |
+| **+ input injection** (this work) | **99.70%** | 212k |
+| | **+5.60** | same |
+
+Our `--no_inject` arm implements the R-MDM recipe — one weight-shared block
+applied recurrently with loss at every loop, information flowing only through the
+hidden state between loops. **It is not an exact reproduction**: R-MDM also
+conditions each loop on a step embedding `(ℓ, L)`, which we do not implement.
+That omission would, if anything, understate their architecture, so the +5.60
+should be read as an upper bound on what input injection contributes over it.
+
+This is the comparison that tests our claim: the recursive architecture alone
+reaches 94.10%, and the component R-MDM does not use adds the remaining 5.60.
+
 ### Margin over every measured baseline
 
 | beaten | their score | ours | margin |
