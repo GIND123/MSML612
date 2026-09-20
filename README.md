@@ -8,7 +8,9 @@ Sudoku benchmark is **saturated** and replaces it, measures **classical solvers*
 that prior work omits, and reports a **negative result**: the one architectural
 component we added does not help once R-MDM's own conditioning is present.**
 
-Trained from scratch. No pretrained weights, no pretrained tokenizer.
+Trained from scratch: every weight randomly initialised, every tokenizer
+hand-written, the primary benchmark generated rather than downloaded.
+[Verify it in under a minute](#built-from-scratch--how-to-verify-it-in-under-a-minute).
 
 > ### Relation to prior work — read this first
 >
@@ -382,6 +384,28 @@ not used because constraint propagation alone solves 100% of it.
 - Sudoku only. Whether recurrence transfers to other constraint families is
   untested here.
 
+## Built from scratch — how to verify it in under a minute
+
+Every model in this repository is randomly initialised and trained from zero.
+No pretrained weights, no pretrained tokenizer, no pretrained embeddings, no
+distillation from a pretrained teacher, at any stage. This is a hard constraint
+on the project, so it is stated here in checkable form rather than as an
+assurance.
+
+| what | where | how to check |
+|---|---|---|
+| **Weights** are random, always | `src/model.py` — `self.apply(self._init)` | every `nn.Linear`/`nn.Embedding` gets `N(0, 0.02²)`; there is no other initialisation path |
+| **No pretrained loader exists** | whole tree | `grep -rn "from_pretrained\|AutoModel\|AutoTokenizer\|torch.hub\|timm" src/` returns **nothing** |
+| **Tokenizers are hand-written**, 7 of them | `src/{sudoku,text8,data,graphs,qm9,sigmorphon}.py` | `grep -n "class .*Tokenizer" src/*.py` — each is a literal symbol list built in-repo |
+| **The Sudoku vocabulary is 10 symbols** | `src/sudoku.py:32` | digits `1`–`9` plus `[MASK]`; no vendored vocab file |
+| **Downloads are data, never weights** | `src/{data,text8,qm9,sigmorphon,sudoku}.py` | the only URLs are the text8 corpus, the QM9 CSV, SIGMORPHON TSVs and the SATNet zip — raw datasets |
+| **The primary benchmark is generated** | `src/gen_hard_sudoku.py` | nothing is downloaded at all; puzzles come from a randomised backtracking fill |
+| **Even the evaluator is from scratch** | `src/train_eval_lm.py` | generative perplexity in the earlier study is scored by a character LM we trained on text8 ourselves, not GPT-2 |
+
+The largest model here is 37.9M parameters and the headline model is **212k** —
+small enough that from-scratch training is the only sensible choice, and small
+enough to retrain end to end on one MIG slice of an A100.
+
 ## Datasets
 
 **Primary — generated, not downloaded.** The standard split is saturated, so it
@@ -450,6 +474,27 @@ python src/train_sudoku.py --recurrent --R 32 --R_infer 64 --mode full \
 python src/sudoku_compare.py --hard data/sudoku_hard --runs runs --pattern 'rec*'
 python src/plot_sudoku.py
 ```
+
+**The matched R-MDM comparison of §2b.** Three arms differing in one component,
+with their step embedding on both sides. `--step_embed` is R-MDM's per-loop
+conditioning `f(h, ℓ, L)`; `--no_inject` turns off the component we tested:
+
+```bash
+for cfg in "--step_embed --no_inject --seed 0:rmdm-faithful-s0" \
+           "--step_embed --no_inject --seed 1:rmdm-faithful-s1" \
+           "--step_embed --seed 0:rmdm-both-s0"; do
+  python src/train_sudoku.py ${cfg%%:*} --recurrent --R 32 --R_infer 64 \
+      --mode full --hard data/sudoku_hard --augment --d 128 --layers 1 --heads 4 \
+      --bs 64 --steps 110000 --lr 3e-4 --ckpt_every 8000 --out runs/${cfg##*:}
+done
+python src/eval_ckpt.py --hard data/sudoku_hard --runs runs   # reads ckpt.pt
+python src/plot_rmdm.py                                       # -> sud_fig9_rmdm.png
+```
+
+`eval_ckpt.py` evaluates from `ckpt.pt` rather than `model.pt` because all three
+of our runs hit the wall clock at step 80,000 and never reached the trainer's
+evaluation block. **Keep the batch size identical across arms** — the retracted
++5.60 came from comparing arms trained at batch 256 and batch 64 (§4).
 
 ---
 
