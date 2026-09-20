@@ -194,10 +194,18 @@ class RecurrentDenoiser(nn.Module):
     """
 
     def __init__(self, vocab, d=128, n_layers=1, n_heads=4, pe="ape",
-                 max_len=128, recurrences=32, hidden_mult=4, inject=True):
+                 max_len=128, recurrences=32, hidden_mult=4, inject=True,
+                 step_embed=False, max_R=128):
         super().__init__()
         self.pe_kind, self.causal = pe, False
         self.recurrences = recurrences
+        # R-MDM (arXiv:2606.18022) conditions each loop on its index, writing the
+        # update as f(h, l, L). Reproducing that faithfully matters: without it
+        # our comparison would weaken THEIR architecture and inflate the margin
+        # we attribute to input injection.
+        self.step_embed = step_embed
+        if step_embed:
+            self.loop_emb = nn.Embedding(max_R + 1, d)
         # `inject` exists to separate two things the headline comparison
         # otherwise conflates: weight sharing, and re-supplying the input at
         # every application. Turning it off keeps the architecture and the depth
@@ -229,7 +237,11 @@ class RecurrentDenoiser(nn.Module):
         inp = self._inject(idx)
         h = inp
         outs = []
-        for _ in range(R):
+        for r in range(R):
+            if self.step_embed:
+                li = torch.full((1,), min(r, self.loop_emb.num_embeddings - 1),
+                                device=h.device, dtype=torch.long)
+                h = h + self.loop_emb(li)[:, None, :]
             if self.inject:
                 h = h + inp                  # input injection: keep the clues alive
             for b in self.blocks:

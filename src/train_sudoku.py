@@ -50,6 +50,9 @@ def get_args():
     p.add_argument("--recurrent", action="store_true",
                    help="weight-shared block applied R times with deep supervision")
     p.add_argument("--R", type=int, default=32, help="training recurrences")
+    p.add_argument("--step_embed", action="store_true",
+                   help="condition each loop on its index, as R-MDM does. Needed "
+                        "for a faithful reproduction of their architecture")
     p.add_argument("--no_inject", action="store_true",
                    help="ablation: drop input injection, keeping architecture and "
                         "depth identical. Isolates weight sharing from injection, "
@@ -111,7 +114,8 @@ blank_te = torch.from_numpy(Xte == 0)
 if a.recurrent:
     model = RecurrentDenoiser(len(tok), a.d, a.layers, a.heads, a.pe,
                               max_len=CELLS + 8, recurrences=a.R,
-                              inject=not a.no_inject).to(dev)
+                              inject=not a.no_inject,
+                              step_embed=a.step_embed).to(dev)
     print(f"params {model.n_params()/1e3:.0f}k  RECURRENT R={a.R} "
           f"layers={a.layers} d={a.d} mode={a.mode} pe={a.pe}", flush=True)
 else:

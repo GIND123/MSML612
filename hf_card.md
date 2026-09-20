@@ -35,7 +35,7 @@ digit relabelling. Metric: board accuracy, all 81 cells correct.
 | greedy MRV | – | – | 5.90% |
 | autoregressive prefix-LM | 2.4M | – | 0.30% |
 | direct recurrent classifier* | 212k | 10.5% | 31.00% |
-| recurrent, no input injection | 212k | – | 94.10% |
+| recurrent, no input injection (batch 64) | 212k | – | 94.10% |
 | feed-forward diffusion, MDLM | 37.9M | 4.40% | 88.15% |
 | feed-forward diffusion, schedule-matched | 37.9M | 40.10% | 88.90% |
 | 32 distinct layers, no weight sharing | 6.34M | 70.20% | 94.50% |
@@ -50,20 +50,32 @@ evidence against their method**, and it is not used as a comparison.
 
 ## Ablations
 
-Built as a ladder, each step changing exactly one thing:
+**Compare only within a batch size.** An earlier version of this card pooled a
+32-layer run at batch 256 (94.50%) with one at batch 64 (83.40%) into a single
+"88.95%", and drew two conclusions from the artefact. Both were wrong and are
+corrected here.
 
-| step | board | gain |
-|---|---|---|
-| feed-forward, 12 layers, 37.9M | 88.90% | – |
-| feed-forward, **32 layers**, 6.34M | 88.95% | **+0.05** |
-| + weight sharing (injection **off**), 212k | 94.10% | **+5.15** |
-| + input injection | **99.70%** | **+5.60** |
+**At batch 256:**
 
-**Depth alone is worth nothing** — 12→32 layers gains 0.05 points. Sharing one
-block across 32 applications gains 5.15 at 30× fewer parameters; re-supplying the
-input each application gains a further 5.60. The weight-sharing comparison holds
-injection **off on both sides**, so the effects are separated rather than
-confounded.
+| step | params | board | gain |
+|---|---|---|---|
+| feed-forward, d=512, 12 layers | 37.9M | 88.90% (n=2) | – |
+| feed-forward, d=128, 32 layers | 6.34M | 94.50% (n=1) | **+5.60** |
+| + weight sharing, d=128, 1 layer × 32 | **212k** | **99.70%** (n=2) | **+5.20** |
+
+Parameters fall monotonically, accuracy rises monotonically: 37.9M → 6.34M →
+212k against 88.90% → 94.50% → 99.70%.
+
+**At batch 64, injection off on both sides:**
+
+| step | params | board | gain |
+|---|---|---|---|
+| feed-forward, d=128, 32 layers | 6.34M | 83.40% (n=1) | – |
+| + weight sharing | **212k** | **94.10%** (n=2) | **+10.70** |
+
+**Corrections.** ~~"Depth alone is worth nothing (+0.05)"~~ — wrong and backwards;
+at matched batch size the deeper, narrower, 6× smaller model gains **+5.60**.
+~~"Input injection is worth +5.60"~~ — **retracted**, see below.
 
 Removing either from the full method: deep supervision **−1.95**, schedule
 matching **−3.15**.
@@ -91,8 +103,15 @@ supervision is dominated by copying the given clues. Low loss, no capability.
   clue range sits inside the Recurrent Transformer's 17–34 but excludes the
   hardest 17-clue instances, so 99.70% at 212k reads as *competitive with* their
   99.5% at 211k, not better.
-- **Input injection is not separated from weight sharing** in the 32-layer
-  comparison; the isolating run is in progress.
+- **Input injection is retracted as a contribution.** In a matched test —
+  identical architecture, batch, and step count, with R-MDM's step embedding on
+  both sides — it is worth **+0.05 points** (96.85% → 96.90%, best decode). The
+  previously claimed +5.60 compared an injection-ON arm at batch 256 against an
+  injection-OFF arm at batch 64; it measured batch size. The single injection-ON
+  seed lands inside the two-seed injection-OFF range at five of six decoding
+  budgets. All three arms stopped at step 80k of 110k on a wall-clock limit, and
+  the ON side is n=1; we could not add seeds, as the allocation had 3,030
+  billing-minutes left against ~3,600 for one run.
 - The SATNet split is not used: constraint propagation alone solves 100% of it.
 
 ## Negative results, reported

@@ -1,11 +1,12 @@
-# Input Injection and Classical Baselines for Recursive Masked Diffusion on Sudoku
+# Recursive Masked Diffusion on Sudoku: Benchmark Saturation, Classical Baselines, and a Negative Result on Input Injection
 
 **Recursive Masked Diffusion Models (R-MDMs) — a weight-shared block applied
 repeatedly inside each denoising step, trained with loss at every loop — are an
 established architecture ([arXiv:2606.18022](https://arxiv.org/html/2606.18022v1)).
-This work reproduces that result independently, adds an architectural component
-they do not use (**input injection**, worth +5.60 points), and evaluates against
-**classical solvers**, which prior work omits.**
+This work reproduces their central finding independently, shows that the standard
+Sudoku benchmark is **saturated** and replaces it, measures **classical solvers**
+that prior work omits, and reports a **negative result**: the one architectural
+component we added does not help once R-MDM's own conditioning is present.**
 
 Trained from scratch. No pretrained weights, no pretrained tokenizer.
 
@@ -23,9 +24,11 @@ Trained from scratch. No pretrained weights, no pretrained tokenizer.
 >
 > | contribution | status |
 > |---|---|
-> | **Input injection** — re-adding the token embedding at every recursion. R-MDM passes information only through the hidden state and reports no such ablation. | **+5.60 points** — the largest single ingredient we measure |
+> | **The standard split is saturated.** Plain constraint propagation solves **1000/1000** of the SATNet test set, so published accuracies on it (SATNet 98.3%) sit *below* a trivial non-learned baseline. | Checkable in seconds; invalidates the benchmark, not the models |
+> | **A hard replacement benchmark**, 100k/1k, 21–28 clues, uniqueness re-verified after every cell removal, train/test leakage checked up to digit relabelling | Propagation solves 3.0% of it |
 > | **Classical solver baselines** measured on our own test set | R-MDM compares only against neural baselines |
-> | **Minimal-puzzle benchmark** with uniqueness verified after every cell removal and leakage checked up to digit relabelling | R-MDM uses Shah et al. (2024), 1.8M boards, human-style masking |
+> | **Independent reproduction** that recursion substitutes for parameters, at two separate training budgets | Confirms R-MDM |
+> | ~~**Input injection** — re-adding the token embedding at every recursion~~ | **Retracted.** Worth **+0.05** in a matched test (§2b). The +5.60 previously claimed here was a batch-size artefact. |
 >
 > **We do not claim to beat R-MDM.** Our 99.70% at 212k parameters and their 95%
 > at 10.6M are measured on **different datasets**, and comparing them directly
@@ -68,12 +71,17 @@ randomised backtracking fill of an empty grid, reaching the full ≈6.7×10²¹ 
 | direct recurrent classifier ¹ | 212k | 10.5% | 31.00% | 4 | 6.6, 21.4, 40.9, 55.1 |
 | feed-forward diffusion, MDLM | 37.9M | 4.40% | 88.15% | 2 | 89.0, 87.3 |
 | feed-forward diffusion, schedule-matched | 37.9M | 40.10% | 88.90% | 2 | 88.3, 89.5 |
-| feed-forward, **32 distinct layers** | 6.34M | 70.20% | 88.95% | 2 | 94.5, 83.4 |
-| recurrent, **no input injection** | 212k | – | 94.10% | 2 | 93.0, 95.2 |
+| feed-forward, **32 distinct layers** @bs256 | 6.34M | 70.20% | 94.50% | 1 | 94.5 |
+| feed-forward, **32 distinct layers** @bs64 ² | 6.34M | – | 83.40% | 1 | 83.4 |
+| recurrent, **no input injection** @bs64 ² | 212k | – | 94.10% | 2 | 93.0, 95.2 |
 | recurrent diffusion, MDLM | 212k | 87.35% | 96.55% | 2 | 97.1, 96.0 |
 | recurrent, **no deep supervision** | 212k | 93.35% | 97.75% | 2 | 97.3, 98.2 |
 | **recurrent diffusion, full method** | **212k** | **97.35%** | **99.70%** | 2 | 99.6, 99.8 |
 | full backtracking search | – | – | 100% | – | 423 nodes mean |
+
+² The `@bs64` rows are a **separate training budget** and must not be compared
+against the `@bs256` rows. Comparing across them is exactly the error that
+produced the retracted +5.60 (§2b) and the false "depth is worthless" claim (§4).
 
 ¹ Both are **our reimplementations of other people's methods, and both failed to
 reproduce their published results** — the recurrent classifier reaches 31%
@@ -84,23 +92,74 @@ as comparisons we won**, and they are excluded from the margin table below.
 
 The relevant SOTA is R-MDM ([arXiv:2606.18022](https://arxiv.org/html/2606.18022v1)).
 Because their benchmark differs from ours, we compare **architectures on our
-benchmark** rather than quoting their number against ours:
+benchmark** rather than quoting their number against ours.
 
-| architecture | board accuracy | params |
-|---|---|---|
-| **R-MDM-style**: weight-shared block, deep supervision, **no input injection** | **94.10%** | 212k |
-| **+ input injection** (this work) | **99.70%** | 212k |
-| | **+5.60** | same |
+Dr. Ayhan's instruction was to *ensure our claims hold against a baseline and the
+state of the art*. We ran that test. **One of our claims did not hold**, and this
+section reports it rather than the number it replaces.
 
-Our `--no_inject` arm implements the R-MDM recipe — one weight-shared block
-applied recurrently with loss at every loop, information flowing only through the
-hidden state between loops. **It is not an exact reproduction**: R-MDM also
-conditions each loop on a step embedding `(ℓ, L)`, which we do not implement.
-That omission would, if anything, understate their architecture, so the +5.60
-should be read as an upper bound on what input injection contributes over it.
+#### 2b. The matched test — and the retraction of "+5.60"
 
-This is the comparison that tests our claim: the recursive architecture alone
-reaches 94.10%, and the component R-MDM does not use adds the remaining 5.60.
+The earlier version of this section claimed input injection was worth **+5.60
+points** over an R-MDM-style arm. That comparison was invalid on two counts:
+
+1. the injection-ON arm trained at **batch 256 for 120k steps**, the injection-OFF
+   arm at **batch 64 for 110k steps** — a 4× difference in batch size;
+2. neither arm had R-MDM's per-loop step embedding `f(h, ℓ, L)`, so the
+   "R-MDM-style" baseline was a **weakened** version of their architecture.
+
+We re-ran the comparison properly: identical architecture, identical
+hyperparameters, identical batch size, identical step count, **step embedding on
+both sides**, one component different.
+
+| NFE | injection OFF (n=2) | OFF seed range | injection ON (n=1) | delta | ON vs OFF range |
+|---|---|---|---|---|---|
+| 1 | 42.00% | [8.30, 75.70] | 89.00% | +47.00 | **outside** |
+| 4 | 89.30% | [84.60, 94.00] | 93.10% | +3.80 | inside |
+| 8 | 93.25% | [91.70, 94.80] | 94.00% | +0.75 | inside |
+| 16 | 94.50% | [93.00, 96.00] | 95.90% | +1.40 | inside |
+| 32 | 96.20% | [95.30, 97.10] | 96.40% | +0.20 | inside |
+| 61 | **96.85%** | [96.60, 97.10] | **96.90%** | **+0.05** | inside |
+
+![rmdm](figures/sud_fig9_rmdm.png)
+
+**At the operating point, input injection is worth +0.05 points — nothing.** With
+one seed on the ON side, the only defensible test is whether it lands outside the
+range spanned by the two OFF seeds. **At five of six budgets it does not.** Two
+seeds of the *identical* injection-OFF configuration differ by 67.4 points at
+NFE 1 and by 0.5 at NFE 61, and the ON run sits inside that band everywhere
+except NFE 1.
+
+The single-pass result (89.00% against an OFF range of [8.30, 75.70]) is the one
+place any signal appears, and one seed cannot establish it. It is plausible that
+injection matters most when nothing else refreshes the input — at NFE 1 the clues
+must survive all 64 recurrences unaided, whereas multi-pass decoding re-feeds
+committed tokens each pass. **We are not claiming that**; it is a hypothesis the
+data hints at and our compute cannot test.
+
+The likeliest reading of the headline result is that **input injection and R-MDM's
+step embedding are redundant**: both supply a per-loop signal anchoring the
+recurrence to its input, and once you have one the other adds nothing. Our
+original measurement compared injection against an arm that had *neither*, and
+credited injection with the difference.
+
+**Caveats, stated plainly.** All three arms stopped at **step 80,000 of 110,000**
+(wall-clock limit), so they are matched to each other but undertrained relative to
+the headline runs. The injection-ON side has **n=1**. We could not add seeds: the
+class allocation had 3,030 billing-minutes left and one training run at this
+configuration costs ~3,600. This does not rescue the +5.60 — an underpowered test
+is a reason to withdraw a claim, not to keep it.
+
+#### What does survive
+
+Recursion substituting for parameters — R-MDM's central claim — reproduces
+cleanly, at **two independent training budgets**, with the comparison matched
+inside each:
+
+| budget | 32-layer feed-forward, 6.34M | recurrent 1 layer × 32, 212k | gain |
+|---|---|---|---|
+| batch 256, 120k steps | 94.50% (n=1) | **99.70%** (n=2) | **+5.20** at 30× fewer params |
+| batch 64, 110k steps, injection off both sides | 83.40% (n=1) | **94.10%** (n=2) | **+10.70** at 30× fewer params |
 
 ### Margin over every measured baseline
 
@@ -108,13 +167,22 @@ reaches 94.10%, and the component R-MDM does not use adds the remaining 5.60.
 |---|---|---|---|
 | constraint propagation (no search) | 3.00% | 99.70% | **33×** |
 | greedy MRV | 5.90% | 99.70% | **17×** |
-| autoregressive prefix-LM | 0.15% | 99.70% | **665×** |
 | feed-forward diffusion, 37.9M params | 88.90% | 99.70% | **+10.80 pts, 180× fewer params** |
 | feed-forward, 32 distinct layers, 6.34M | 94.50% | 99.70% | **+5.20 pts, 30× fewer params** |
 
-Every baseline in this table was **measured on our own test set**, not cited. The
-only thing not beaten is full backtracking search (100%), which is exact search
-rather than a learned model and needs 423 search nodes per puzzle on average.
+Every baseline in this table was **measured on our own test set**, not cited, and
+every neural row was trained at **batch 256**, the same budget as the 99.70%.
+
+**Deliberately excluded:** our autoregressive prefix-LM (0.15%) and direct
+recurrent classifier (31.00%). Both are **our** reimplementations of other
+people's methods and both failed to reproduce their published results (footnote
+¹). A "665× margin" over our own broken code would measure our implementation,
+not our method, so it is not claimed. They remain in the results table above so
+the failure is visible.
+
+The only thing not beaten is full backtracking search (100%), which is exact
+search rather than a learned model and needs 423 search nodes per puzzle on
+average.
 
 Against published specialised solvers the position is **comparable, not
 superior**: 99.70% at 212k parameters against the Recurrent Transformer's 99.5%
@@ -134,25 +202,44 @@ fixed 12-layer network cannot express thirty rounds at any width.
 
 ![ablation](figures/sud_fig4_ablation.png)
 
-Built as a ladder, each step changing exactly one thing:
+**Compare only within a batch size.** An earlier version of this table pooled a
+32-layer run at batch 256 (94.50%) with one at batch 64 (83.40%) into a single
+"88.95%" that belonged to neither, and then read the ladder off that number. Two
+published conclusions came out of that artefact and both were wrong. They are
+corrected below.
 
-| step | configuration | board | gain |
-|---|---|---|---|
-| baseline | feed-forward, 12 layers, 37.9M params | 88.90% | – |
-| + depth | feed-forward, **32 layers**, 6.34M params | 88.95% | **+0.05** |
-| + weight sharing | recurrent, injection **off**, 212k | 94.10% | **+5.15** |
-| + input injection | recurrent, injection **on** | 99.70% | **+5.60** |
+### At batch 256 (120k–150k steps)
 
-**Depth alone is worth nothing.** Going from 12 to 32 layers gains 0.05 points.
-Sharing one block across 32 applications gains 5.15 at **30× fewer parameters** —
-this reproduces R-MDM's central finding independently. Re-supplying the input at
-every application gains a further **5.60**, and that component is not present in
-R-MDM, which passes information only through the hidden state between loops.
+| step | configuration | params | board | gain |
+|---|---|---|---|---|
+| baseline | feed-forward, d=512, 12 layers, 150k steps | 37.9M | 88.90% (n=2) | – |
+| + depth, − width | feed-forward, d=128, 32 layers, 120k steps | 6.34M | 94.50% (n=1) | **+5.60** |
+| + weight sharing | recurrent, d=128, 1 layer × 32, 120k steps | **212k** | **99.70%** (n=2) | **+5.20** |
 
-The weight-sharing comparison is clean: input injection is held **off on both
-sides**, so the two effects are separated rather than confounded. An earlier
-version of this table quoted +3.75 for weight sharing from a comparison that
-conflated the two; that figure was wrong and is superseded.
+**Parameters fall monotonically and accuracy rises monotonically**: 37.9M →
+6.34M → 212k against 88.90% → 94.50% → 99.70%. The deeper model even trained for
+*fewer* steps than the baseline it beats. Capacity was never the bottleneck;
+iteration count is.
+
+### At batch 64 (110k steps), injection off on both sides
+
+| step | configuration | params | board | gain |
+|---|---|---|---|---|
+| baseline | feed-forward, d=128, 32 layers | 6.34M | 83.40% (n=1) | – |
+| + weight sharing | recurrent, d=128, 1 layer × 32 | **212k** | **94.10%** (n=2) | **+10.70** |
+
+### Two corrections to earlier versions of this table
+
+- ~~"Depth alone is worth nothing — 12 to 32 layers gains 0.05 points."~~
+  **Wrong, and backwards.** That 0.05 came from comparing against the pooled
+  88.95%. At matched batch size the deeper, *narrower*, 6× smaller model gains
+  **+5.60**.
+- ~~"Input injection is worth +5.60."~~ **Retracted** — see §2b. In a matched test
+  with R-MDM's step embedding present it is worth **+0.05**.
+
+Both errors had the same cause: treating runs at different training budgets as
+interchangeable seeds. `cfg_label` in `src/plot_sudoku.py` now makes batch size
+part of a configuration's identity so the two cannot be pooled again.
 
 Two further ablations on the full method:
 
@@ -195,7 +282,12 @@ refinement the method is built around, made visible rather than asserted.
 
 ![difficulty](figures/sud_fig7_difficulty.png)
 
-Accuracy against puzzle difficulty, with sample size per point.
+Accuracy against puzzle difficulty, with sample size per point. **The curve is
+flat at 99–100% across the whole 22–27 clue range**, against 3.0% for constraint
+propagation on the same set. Two things follow, and the second is a limitation:
+the model is uniformly strong across the difficulty range this benchmark spans,
+and **the benchmark does not stress it** — we would need 17–21 clue puzzles, where
+minimal-puzzle generation gets sharply more expensive, to find where it breaks.
 
 ![saturation](figures/sud_fig8_saturation.png)
 
@@ -232,10 +324,16 @@ Implementation: `RecurrentDenoiser` in `src/model.py`, `recurrent_cond_loss` in
 inference, chosen to match Yang et al. so the comparison isolates the diffusion
 framing rather than scale.
 
-**Input injection** keeps the clues alive through thirty applications of the same
-block. **Deep supervision** forces each application to be a valid one-step
-refinement rather than letting the stack learn one entangled R-step function, and
-it is what makes R = 64 inference work after R = 32 training (§5).
+**Input injection** re-adds the token embedding at every recursion, on the
+reasoning that the clue signal would otherwise decay through thirty applications
+of the same block. **That reasoning is not supported by our own measurement**: in
+a matched test it is worth +0.05 points once R-MDM's step embedding is present
+(§2b). It is retained in the default configuration because the headline runs used
+it, not because we can show it helps. **Deep supervision** forces each application
+to be a valid one-step refinement rather than letting the stack learn one
+entangled R-step function, and it is what makes R = 64 inference work after
+R = 32 training (§5); unlike injection, it is load-bearing — removing it costs
+1.95 points (99.70% → 97.75%, both n=2 at batch 256).
 
 ## 8. Published results and their distributions
 
@@ -264,14 +362,23 @@ not used because constraint propagation alone solves 100% of it.
   comparable and we do not compare them.
 
 - **Distribution mismatch** with all published numbers (§8). Not a SOTA claim.
-- ~~Input injection is not separated from weight sharing.~~ **Closed**: the
-  isolating run (identical architecture and depth, injection off) gives 94.10%,
-  so injection is worth +5.60 and weight sharing +5.15 with injection held off
-  on both sides.
+- ~~Input injection is not separated from weight sharing.~~ ~~**Closed**: injection
+  is worth +5.60.~~ **Reopened, then resolved against us.** The matched test (§2b)
+  puts input injection at **+0.05** once R-MDM's step embedding is present. The
+  +5.60 was an artefact of a 4× batch-size difference between the two arms. The
+  claim is withdrawn.
 - **The direct-classifier reproduction failed** (31% vs 99.5% published). Not
   used as evidence; reported so the gap is visible.
-- `feed-forward 32L` is now n = 2 but highly unstable (94.5 / 83.4, sd 5.55).
-  Its mean of 88.95% should be read with that spread in mind.
+- ~~`feed-forward 32L` is n = 2 but highly unstable (94.5 / 83.4).~~ **Not a seed
+  effect at all**: 94.5 is batch 256 and 83.4 is batch 64. They are two budgets,
+  not two seeds, and pooling them produced the false "depth is worth nothing"
+  conclusion (§4). Each is n = 1 at its own budget.
+- **Several arms are n = 1**, and the injection-ON arm of §2b is n = 1. Two seeds
+  of one configuration differ by up to 67 points at NFE 1 and 0.5 at NFE 61, so
+  low-NFE numbers in this report carry little information.
+- **Compute exhausted.** 3,030 of 3,000,000 billing-minutes remained at the end;
+  one further training run costs ~3,600. The open questions below cannot be
+  closed with the allocation available.
 - Sudoku only. Whether recurrence transfers to other constraint families is
   untested here.
 

@@ -20,18 +20,29 @@ CLASSICAL = {"constraint propagation": 0.0300, "greedy MRV": 0.0590}
 
 
 def cfg_label(a):
+    """Identify a configuration.
+
+    The training budget is part of the identity. An earlier version of this
+    function left it out, so a 32-layer run at batch 256 (94.50%) and one at
+    batch 64 (83.40%) were averaged into a single "88.95%" that belonged to
+    neither. That artefact is what produced the claim that depth was worth
+    nothing. Runs at different budgets are different configurations and are
+    never pooled.
+    """
     if a.get("objective") == "ar":
-        return "autoregressive prefix-LM"
-    if a.get("objective") == "direct":
-        return "direct recurrent classifier"
-    if not a.get("recurrent"):
-        return f"feed-forward {a['layers']}L ({a['mode']})"
-    tags = []
-    if a.get("no_inject"):
-        tags.append("no-inject")
-    if a.get("no_deep_sup"):
-        tags.append("no-deepsup")
-    return "recurrent " + a["mode"] + (" [" + ",".join(tags) + "]" if tags else "")
+        base = "autoregressive prefix-LM"
+    elif a.get("objective") == "direct":
+        base = "direct recurrent classifier"
+    elif not a.get("recurrent"):
+        base = f"feed-forward {a['layers']}L ({a['mode']})"
+    else:
+        tags = []
+        if a.get("no_inject"):
+            tags.append("no-inject")
+        if a.get("no_deep_sup"):
+            tags.append("no-deepsup")
+        base = "recurrent " + a["mode"] + (" [" + ",".join(tags) + "]" if tags else "")
+    return f"{base}  @bs{a.get('bs')}"
 
 
 runs = defaultdict(list)
@@ -49,11 +60,13 @@ for f in sorted(glob.glob(f"{RUNS}/*/result.json")):
 # ---- Figure 1: board accuracy against decoding passes -----------------------
 fig, ax = plt.subplots(figsize=(7.2, 4.6))
 GRID = [1, 2, 4, 8, 16, 32, 61]
-style = {"recurrent full": ("#1a5276", "o", 2.4),
-         "recurrent mdlm": ("#2980b9", "s", 1.6),
-         "feed-forward 12L (full)": ("#c0392b", "^", 1.6),
-         "feed-forward 12L (mdlm)": ("#e67e22", "v", 1.4),
-         "feed-forward 32L (full)": ("#8e44ad", "D", 1.4)}
+style = {"recurrent full  @bs256": ("#1a5276", "o", 2.4),
+         "recurrent mdlm  @bs256": ("#2980b9", "s", 1.6),
+         "feed-forward 12L (full)  @bs256": ("#c0392b", "^", 1.6),
+         "feed-forward 12L (mdlm)  @bs256": ("#e67e22", "v", 1.4),
+         "feed-forward 32L (full)  @bs256": ("#8e44ad", "D", 1.4),
+         "recurrent full [no-inject]  @bs64": ("#16a085", "P", 1.4),
+         "feed-forward 32L (full)  @bs64": ("#7f8c8d", "X", 1.2)}
 for label, rs in sorted(runs.items()):
     if label not in style:
         continue
@@ -72,7 +85,8 @@ for name, v in CLASSICAL.items():
 ax.set_xscale("log", base=2)
 ax.set_xlabel("denoising passes (NFE)")
 ax.set_ylabel("board accuracy (%)  — all 81 cells correct")
-ax.set_title("Hard Sudoku: recurrence beats capacity")
+ax.set_title("Hard Sudoku: recurrence beats capacity\n(batch size is part of each label - runs at different budgets are not pooled)",
+             fontsize=10)
 ax.grid(alpha=.3); ax.legend(fontsize=7.5, loc="lower right"); ax.set_ylim(-3, 103)
 fig.tight_layout(); fig.savefig(f"{OUT}/sud_fig1_passes.png", dpi=170)
 
@@ -87,7 +101,7 @@ for label, rs in runs.items():
     best = np.mean([max(v["board"] for v in r["decode"].values()) for r in rs])
     pts.append((npar, best * 100, label))
 for npar, acc, label in pts:
-    hero = label == "recurrent full"
+    hero = label == "recurrent full  @bs256"
     ax.scatter(npar, acc, s=170 if hero else 70,
                color="#1a5276" if hero else "#888",
                marker="*" if hero else "o", zorder=3 if hero else 2)
@@ -98,7 +112,8 @@ ax.text(2.3e5, 99.5 + 0.9, "Recurrent Transformer 99.5% @211k params "
                            "(different clue distribution)", fontsize=6.6, color="#117a65")
 ax.set_xscale("log")
 ax.set_xlabel("parameters"); ax.set_ylabel("board accuracy (%)")
-ax.set_title("180× fewer parameters, 10 points better")
+ax.set_title("At batch 256: fewer parameters, better accuracy, monotonically\n"
+             "37.9M → 88.90%   |   6.34M → 94.50%   |   212k → 99.70%", fontsize=10)
 ax.grid(alpha=.3); ax.set_ylim(-5, 108)
 fig.tight_layout(); fig.savefig(f"{OUT}/sud_fig2_params.png", dpi=170)
 
@@ -122,22 +137,25 @@ if os.path.exists(sw):
     fig.tight_layout(); fig.savefig(f"{OUT}/sud_fig3_rsweep.png", dpi=170)
 
 # ---- Figure 4: ablation ladder ---------------------------------------------
-order = ["feed-forward 12L (mdlm)", "feed-forward 12L (full)",
-         "feed-forward 32L (full)", "recurrent mdlm",
-         "recurrent full [no-deepsup]", "recurrent full [no-inject]",
-         "recurrent full"]
+order = ["feed-forward 12L (mdlm)  @bs256", "feed-forward 12L (full)  @bs256",
+         "feed-forward 32L (full)  @bs256", "recurrent mdlm  @bs256",
+         "recurrent full [no-deepsup]  @bs256", "recurrent full  @bs256",
+         "feed-forward 32L (full)  @bs64", "recurrent full [no-inject]  @bs64"]
 have = [(o, np.mean([max(v["board"] for v in r["decode"].values())
                      for r in runs[o]]) * 100) for o in order if o in runs]
 if have:
     fig, ax = plt.subplots(figsize=(7.4, 4.0))
     names = [h[0] for h in have]; vals = [h[1] for h in have]
-    cols = ["#1a5276" if n == "recurrent full" else "#9fb6c8" for n in names]
+    cols = ["#1a5276" if n == "recurrent full  @bs256"
+            else ("#d5dbdb" if "@bs64" in n else "#9fb6c8") for n in names]
     ax.barh(range(len(vals)), vals, color=cols)
     for i, v in enumerate(vals):
         ax.text(v + 0.8, i, f"{v:.2f}%", va="center", fontsize=8)
     ax.set_yticks(range(len(names))); ax.set_yticklabels(names, fontsize=8)
     ax.set_xlabel("board accuracy (%)"); ax.set_xlim(0, 108)
-    ax.set_title("Every ingredient is load-bearing")
+    ax.set_title("Ablation at matched budget\n"
+                 "pale = batch 64, a separate budget: compare within a batch size",
+                 fontsize=10)
     ax.grid(alpha=.3, axis="x")
     fig.tight_layout(); fig.savefig(f"{OUT}/sud_fig4_ablation.png", dpi=170)
 
